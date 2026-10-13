@@ -1,0 +1,1 @@
+"""ResolveAI MCP server package."""

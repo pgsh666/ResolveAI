@@ -1,0 +1,28 @@
+# Separate Compose project + ports + volumes: never reuses the business DB.
+# docker compose -p resolveai-acceptance -f docker-compose.yml -f docker-compose.acceptance.yml up -d --build
+services:
+  db:
+    ports: !override ["127.0.0.1:5434:5432"]
+  redis:
+    ports: !override ["127.0.0.1:6380:6379"]
+  mcp:
+    ports: !override ["127.0.0.1:8003:8001"]
+  tracing:
+    ports: !override ["127.0.0.1:16687:16686", "127.0.0.1:4319:4317", "127.0.0.1:4320:4318"]
+  backend:
+    ports: !override ["127.0.0.1:8002:8000"]
+    environment:
+      CORS_ORIGINS: http://localhost:3001,http://127.0.0.1:3001
+      OTEL_UI_URL: http://127.0.0.1:16687
+      PROMPT_VERSION: resolveai-prompts-2026-10-12-v3
+  worker:
+    environment:
+      OTEL_UI_URL: http://127.0.0.1:16687
+      PROMPT_VERSION: resolveai-prompts-2026-10-12-v3
+  frontend:
+    ports: !override ["127.0.0.1:3001:3000"]
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: http://127.0.0.1:8002/api/v1
+    environment:
+      NEXT_PUBLIC_API_URL: http://127.0.0.1:8002/api/v1

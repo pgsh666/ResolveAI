@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.mypy_cache/
+
+# Environments and secrets
+.env
+.env.local
+.env.*.local
+.env.eval
+.env.auth
+.backups/
+.venv/
+venv/
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+*.log
+dist/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local build sources and generated artifacts
+.build/
+
+# Private/local files in the publication copy
+.env.*
+!.env.example
+!.env.local.example
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3-*
+*.dump
+*.har
+*.webm
+*.zip
+tmp/
+github-upload/
+.upload-local/
+playwright-report/
+test-results/
+
+# Local evaluation and acceptance outputs can contain operational/database-derived data.
+output/
+backend/evaluation/reports/

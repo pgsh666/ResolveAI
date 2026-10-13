@@ -1,0 +1,10 @@
+.env
+.env*
+*.db
+*.sqlite3
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+tests/
+evaluation/reports/

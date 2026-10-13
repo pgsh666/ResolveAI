@@ -1,0 +1,16 @@
+{
+  "documents": [
+    {
+      "title": "预售商品发货与取消规则",
+      "source": "policy://product/presale-delivery",
+      "category": "product",
+      "content": "预售商品应以商品页面承诺的发货日期为准。超过承诺日期仍未发货时，客户可申请取消订单并原路退款；涉及定制内容或已明确开始履约的订单，需要转人工核验具体约定。"
+    },
+    {
+      "title": "支付渠道维护应对流程",
+      "source": "sop://payment/channel-maintenance",
+      "category": "payment",
+      "content": "支付渠道维护期间，应向客户说明预计恢复时间并提供可用的替代支付方式。不得要求客户反复提交相同订单；出现重复扣款迹象时，应立即停止重试并进入支付对账流程。"
+    }
+  ]
+}

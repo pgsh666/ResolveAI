@@ -1,0 +1,42 @@
+# Optional: requires a real controlled domain + DNS and a strong existing DB password.
+# Do not apply to the acceptance overlay. Credentials never belong in this file.
+services:
+  backend:
+    environment:
+      PUBLIC_DEPLOYMENT: "true"
+      AUTH_COOKIE_SECURE: "true"
+      CORS_ORIGINS: https://${PUBLIC_DOMAIN:?Set your controlled public domain}
+      DATABASE_URL: postgresql+psycopg://resolveai:${POSTGRES_PASSWORD:?Set a strong database password}@db:5432/resolveai
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "172.29.241.10"]
+  frontend:
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://${PUBLIC_DOMAIN:?Set your controlled public domain}/api/v1
+    environment:
+      NEXT_PUBLIC_API_URL: https://${PUBLIC_DOMAIN:?Set your controlled public domain}/api/v1
+  db:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a strong existing database password}
+  proxy:
+    image: caddy:2-alpine
+    environment:
+      PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Set your controlled public domain}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      default:
+        ipv4_address: 172.29.241.10
+    depends_on:
+      backend: { condition: service_healthy }
+      frontend: { condition: service_healthy }
+    restart: unless-stopped
+networks:
+  default:
+    ipam:
+      config: [{ subnet: 172.29.241.0/24 }]
+volumes:
+  caddy_data:
+  caddy_config:
