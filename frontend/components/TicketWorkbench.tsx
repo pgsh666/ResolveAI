@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, usePathname } from "next/navigation";
 import { KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -13,17 +13,20 @@ import {
   Clock3,
   FileText,
   LoaderCircle,
+  MessageSquareText,
   PackageCheck,
   RefreshCw,
   Send,
   ShieldAlert,
   Sparkles,
+  Star,
   ThumbsDown,
   ThumbsUp,
   UserRound,
   X,
 } from "lucide-react";
 import { api, watchBackgroundTask } from "@/lib/api";
+import { serviceDisplayText } from "@/lib/presentation";
 import { useAuth } from "@/components/AuthProvider";
 import type { BackgroundTask, TicketDetail } from "@/lib/types";
 import { categoryLabel, priorityLabel, statusLabel } from "@/components/Dashboard";
@@ -31,9 +34,11 @@ import { categoryLabel, priorityLabel, statusLabel } from "@/components/Dashboar
 
 export function TicketWorkbench() {
   const { user } = useAuth();
-  const canHandle = user?.role === "agent" || user?.role === "admin";
-  const canReview = user?.role === "reviewer" || user?.role === "admin";
+  const canHandle = user?.role === "admin";
+  const canReview = user?.role === "admin";
   const params = useParams<{ id: string }>();
+  const pathname = usePathname();
+  const listPath = pathname.startsWith("/chats/") ? "/chats" : "/tickets";
   const [ticket, setTicket] = useState<TicketDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState<"analyze" | "approve" | "reject" | "rewrite" | "send" | "refund" | null>(null);
@@ -79,15 +84,15 @@ export function TicketWorkbench() {
     setAction("refund"); setError(""); setNotice("");
     try {
       const result = await api.executeApprovedRefund(ticket.id, ticket.approval.id, ticket.order_id, ticket.approval.amount);
-      if (!result.result.success || result.result.mode !== "simulated") throw new Error("退款工具未返回项目模拟执行结果");
+      if (!result.result.success || result.result.mode !== "simulated") throw new Error("退款工具未返回有效的执行结果");
       setTicket(await api.ticket(ticket.id));
-      setNotice(result.replayed ? "该模拟退款已执行，本次为幂等回放，未重复执行。" : "模拟退款已执行并写入审计记录，不涉及真实资金。您可改写回复后发送。");
+      setNotice(result.replayed ? "该退款已执行，本次为幂等回放，未重复执行。" : "退款操作已完成并写入审计记录，不涉及真实资金。您可改写回复后发送。");
     } catch (reason) { setError((reason as Error).message); } finally { setAction(null); }
   }
 
   function adoptDraft() {
     if (!ticket?.draft_response) return;
-    setComposerText(ticket.draft_response);
+    setComposerText(serviceDisplayText(ticket.draft_response, true));
     setNotice("AI 草稿已放入编辑框，您可以修改后发送。");
     requestAnimationFrame(() => composerRef.current?.focus());
   }
@@ -116,7 +121,7 @@ export function TicketWorkbench() {
     try {
       setTicket(await api.sendResponse(params.id, response));
       setComposerText("");
-      setNotice("回复已通过项目演示通道发送，并写入审计记录。");
+      setNotice("回复已发送，并写入审计记录。");
     } catch (reason) {
       setError((reason as Error).message);
     } finally {
@@ -132,14 +137,15 @@ export function TicketWorkbench() {
   }
 
   if (loading) return <div className="center-state"><LoaderCircle className="spin" /><strong>正在载入工单工作台</strong></div>;
-  if (!ticket) return <div className="center-state error-state"><ShieldAlert /><strong>无法打开工单</strong><span>{error}</span><Link href="/tickets">返回工单列表</Link></div>;
+  if (!ticket) return <div className="center-state error-state"><ShieldAlert /><strong>无法打开对话</strong><span>{error}</span><Link href={listPath}>返回列表</Link></div>;
   const analyzed = Boolean(ticket.assessment?.confidence_breakdown);
   const confidenceBreakdown = ticket.assessment?.confidence_breakdown;
+  const feedbacks = ticket.customer_feedbacks ?? [];
 
   return <div className="workbench-page">
     <header className="workbench-header">
       <div className="workbench-title">
-        <Link href="/tickets" className="back-button"><ArrowLeft size={18} /></Link>
+        <Link href={listPath} className="back-button" aria-label="返回列表"><ArrowLeft size={18} /></Link>
         <div><div className="title-line"><span>{ticket.ticket_no}</span><h1>{ticket.subject}</h1><span className={`status-badge ${ticket.status}`}>{statusLabel(ticket.status)}</span></div><p>创建于 {formatDate(ticket.created_at)} · SLA 剩余 {ticket.sla_minutes} 分钟</p></div>
       </div>
       <div className="workbench-actions">
@@ -169,11 +175,18 @@ export function TicketWorkbench() {
         <div className="conversation-heading"><div><h2>对话与处置</h2><span>Agent 已读取完整上下文</span></div><span className="channel-chip">{ticket.channel.toUpperCase()}</span></div>
         <div className="message-stream">
           <div className="message-time">今天 · {new Date(ticket.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</div>
-          {ticket.conversation.map((message) => message.role === "customer" ? <div className="message customer-message" key={message.id}><div className="message-avatar"><UserRound size={17} /></div><div><div className="message-meta"><strong>{ticket.customer_name}</strong><span>客户 · {new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span></div><div className="bubble">{message.content}</div></div></div> : <div className="message agent-message sent-message" key={message.id}><div className="message-avatar"><CheckCircle2 size={17} /></div><div><div className="message-meta"><strong>ResolveAI</strong><span>已发送 · {new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span></div><div className="bubble"><span className="sent-tag"><CheckCircle2 size={13} />已发送回复</span><p>{message.content}</p></div></div></div>)}
-          {ticket.draft_response && <div className="message agent-message"><div className="message-avatar"><Bot size={17} /></div><div><div className="message-meta"><strong>ResolveAI</strong><span>回复草稿 · 等待发送</span></div><div className="bubble"><span className="draft-tag"><Sparkles size={13} />AI 草稿</span><p>{ticket.draft_response}</p><div className="draft-actions"><button type="button" onClick={adoptDraft} disabled={Boolean(action) || !canHandle}><ThumbsUp size={14} />{composerText === ticket.draft_response ? "已采用" : "采用"}</button><button type="button" onClick={rewriteDraft} disabled={Boolean(action) || !canHandle}>{action === "rewrite" ? <LoaderCircle className="spin" size={14} /> : <ThumbsDown size={14} />}改写</button></div></div></div></div>}
+          {ticket.conversation.map((message) => message.role === "customer" ? <div className="message customer-message" key={message.id}><div className="message-avatar"><UserRound size={17} /></div><div><div className="message-meta"><strong>{ticket.customer_name}</strong><span>客户 · {new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span></div><div className="bubble">{message.content}</div></div></div> : <div className="message agent-message sent-message" key={message.id}><div className="message-avatar"><CheckCircle2 size={17} /></div><div><div className="message-meta"><strong>ResolveAI</strong><span>已发送 · {new Date(message.created_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</span></div><div className="bubble"><span className="sent-tag"><CheckCircle2 size={13} />已发送回复</span><p>{serviceDisplayText(message.content, true)}</p></div></div></div>)}
+          {ticket.draft_response && <div className="message agent-message"><div className="message-avatar"><Bot size={17} /></div><div><div className="message-meta"><strong>ResolveAI</strong><span>回复草稿 · 等待发送</span></div><div className="bubble"><span className="draft-tag"><Sparkles size={13} />AI 草稿</span><p>{serviceDisplayText(ticket.draft_response, true)}</p><div className="draft-actions"><button type="button" onClick={adoptDraft} disabled={Boolean(action) || !canHandle}><ThumbsUp size={14} />{composerText === serviceDisplayText(ticket.draft_response, true) ? "已采用" : "采用"}</button><button type="button" onClick={rewriteDraft} disabled={Boolean(action) || !canHandle}>{action === "rewrite" ? <LoaderCircle className="spin" size={14} /> : <ThumbsDown size={14} />}改写</button></div></div></div></div>}
           {!analyzed && <div className="analysis-placeholder"><div className="placeholder-orb"><Sparkles size={24} /></div><strong>让 Agent 分析这张工单</strong><p>系统将并行查询订单与知识库，生成可追溯的处置建议。</p><button className="primary-button" onClick={analyze} disabled={Boolean(action) || !canHandle}>{action === "analyze" ? <LoaderCircle className="spin" size={16} /> : <Sparkles size={16} />}{action === "analyze" ? `${backgroundTask?.progress ?? 0}%` : "开始分析"}</button></div>}
+          <section className="workbench-feedback" aria-label="客户反馈">
+            <header><MessageSquareText size={17} /><h3>客户反馈</h3><span>{feedbacks.length} 条</span></header>
+            {feedbacks.length ? <ol>{[...feedbacks].reverse().map(feedback => <li className="workbench-feedback-item" key={feedback.id}>
+              <div className="feedback-meta"><span className={`feedback-outcome ${feedback.resolved === true ? "resolved" : feedback.resolved === false ? "unresolved" : "unknown"}`}>{feedback.resolved === true ? "问题已解决" : feedback.resolved === false ? "仍需帮助" : "处理结果未记录"}</span><span className="feedback-rating"><Star size={13} />{feedback.rating == null ? "未评分" : `${feedback.rating} / 5 分`}</span>{feedback.created_at ? <time dateTime={feedback.created_at}>{formatDate(feedback.created_at)}</time> : <span>时间未记录</span>}</div>
+              <p className={feedback.feedback ? "feedback-comment" : "feedback-comment empty"}>{feedback.feedback || "客户未填写留言"}</p>
+            </li>)}</ol> : <p className="feedback-empty">暂无客户反馈，客户提交评价后会在这里显示。</p>}
+          </section>
         </div>
-        <div className="composer"><textarea ref={composerRef} value={composerText} onChange={(event) => setComposerText(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={ticket.draft_response ? "点击“采用”带入草稿，或直接输入回复…" : "输入回复…"} rows={1} disabled={!canHandle} /><span className="composer-hint">Ctrl + Enter 发送</span><button type="button" className="send-button" aria-label="发送回复" onClick={sendResponse} disabled={Boolean(action) || !canHandle || !composerText.trim()}>{action === "send" ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div>
+        <div className="composer"><textarea ref={composerRef} aria-label="回复内容" value={composerText} onChange={(event) => setComposerText(event.target.value)} onKeyDown={handleComposerKeyDown} placeholder={ticket.draft_response ? "点击“采用”带入草稿，或直接输入回复…" : "输入回复…"} rows={1} disabled={!canHandle} /><span className="composer-hint">Ctrl + Enter 发送</span><button type="button" className="send-button" aria-label="发送回复" onClick={sendResponse} disabled={Boolean(action) || !canHandle || !composerText.trim()}>{action === "send" ? <LoaderCircle className="spin" size={16} /> : <Send size={16} />}</button></div>
       </main>
 
       <aside className="agent-inspector">
@@ -182,12 +195,12 @@ export function TicketWorkbench() {
           {analyzed ? <><div className="confidence-row"><span>综合置信度</span><strong>{Math.round((ticket.confidence ?? 0) * 100)}%</strong></div><div className="confidence-bar"><i style={{ width: `${(ticket.confidence ?? 0) * 100}%` }} /></div>{confidenceBreakdown ? <details className="confidence-details"><summary>查看评分依据</summary><div className="confidence-components">{confidenceBreakdown.components.map((component) => <div key={component.key}><span><strong>{component.label}</strong><small>{component.evidence}</small></span><i>{Math.round(component.score * 100)}% × {Math.round(component.weight * 100)}%</i></div>)}</div>{confidenceBreakdown.penalties.length > 0 && <div className="confidence-penalties">{confidenceBreakdown.penalties.map((penalty) => <p key={penalty.key}>-{Math.round(penalty.value * 100)} 分 · {penalty.label}：{penalty.reason}</p>)}</div>}</details> : <p className="legacy-confidence">旧版评分；重新运行 Agent 后可查看五项评分依据。</p>}</> : <p className="inspector-empty">运行工作流后，这里会展示 Agent 的判断依据、协作轨迹和审批建议。</p>}
         </section>
 
-        {ticket.recommended_action && <section className="inspector-section"><div className="section-label"><CircleDollarSign size={15} />建议动作</div><div className="recommendation"><strong>{ticket.recommended_action}</strong><p>{ticket.assessment?.rationale}</p>{ticket.assessment?.refund_amount ? <span>涉及金额 ¥{ticket.assessment.refund_amount}</span> : null}</div></section>}
+        {ticket.recommended_action && <section className="inspector-section"><div className="section-label"><CircleDollarSign size={15} />建议动作</div><div className="recommendation"><strong>{serviceDisplayText(ticket.recommended_action)}</strong><p>{serviceDisplayText(ticket.assessment?.rationale)}</p>{ticket.assessment?.refund_amount ? <span>涉及金额 ¥{ticket.assessment.refund_amount}</span> : null}</div></section>}
 
         {ticket.approval && <section className={`approval-box ${ticket.approval.state}`}><div className="approval-box-head"><ShieldAlert size={19} /><div><strong>{approvalTitle(ticket.approval.state)}</strong></div></div><p>{ticket.approval.risk_reason}</p>{ticket.approval.state === "pending" && <div className="decision-buttons"><button className="approve-button" disabled={Boolean(action) || !canReview} onClick={() => decide("approve")}>{action === "approve" ? <LoaderCircle className="spin" size={15} /> : <CheckCircle2 size={15} />}批准执行</button><button className="reject-button" disabled={Boolean(action) || !canReview} onClick={() => decide("reject")}><X size={15} />驳回</button></div>}{ticket.approval.state !== "pending" && <div className="review-result"><CheckCircle2 size={15} />{ticket.approval.reviewed_by} · {ticket.approval.reviewer_note}</div>}</section>}
-        {ticket.approval?.state === "approved" && ticket.approval.amount && ticket.order_id && ticket.approval.action.includes("退款") ? <section className="approval-box approved"><strong>项目模拟资金动作</strong><p>仅执行已批准的模拟退款，不涉及真实资金；重复请求由幂等键保护。</p><button type="button" className="approve-button" onClick={() => void executeRefund()} disabled={Boolean(action) || !canReview || ticket.audit_events.some((event) => event.details?.tool_name === "execute_refund" && event.status === "completed")}>{action === "refund" ? "正在执行…" : ticket.audit_events.some((event) => event.details?.tool_name === "execute_refund" && event.status === "completed") ? "模拟退款已执行" : "执行模拟退款"}</button></section> : null}
+        {ticket.approval?.state === "approved" && ticket.approval.amount && ticket.order_id && ticket.approval.action.includes("退款") ? <section className="approval-box approved"><strong>退款执行</strong><p>仅执行已批准的退款，不涉及真实资金；重复请求由幂等键保护。</p><button type="button" className="approve-button" onClick={() => void executeRefund()} disabled={Boolean(action) || !canReview || ticket.audit_events.some((event) => event.details?.tool_name === "execute_refund" && event.status === "completed")}>{action === "refund" ? "正在执行…" : ticket.audit_events.some((event) => event.details?.tool_name === "execute_refund" && event.status === "completed") ? "退款已执行" : "执行退款"}</button></section> : null}
 
-        {ticket.audit_events.length > 0 && <section className="inspector-section timeline-section"><div className="section-label"><Clock3 size={15} />Agent 协作轨迹 <span>{ticket.audit_events.length} 步</span></div><div className="agent-timeline">{ticket.audit_events.map((event, index) => <div className="timeline-item" key={event.id}><div className="timeline-rail"><i className={event.agent === "人工审批" ? "human" : ""}>{event.agent === "人工审批" ? <UserRound size={12} /> : <Check size={12} />}</i>{index < ticket.audit_events.length - 1 && <span />}</div><div><div><strong>{event.agent}</strong><small>{event.duration_ms}ms</small></div><p>{event.summary}</p><span>{event.action}</span></div></div>)}</div></section>}
+        {ticket.audit_events.length > 0 && <section className="inspector-section timeline-section"><div className="section-label"><Clock3 size={15} />Agent 协作轨迹 <span>{ticket.audit_events.length} 步</span></div><div className="agent-timeline">{ticket.audit_events.map((event, index) => <div className="timeline-item" key={event.id}><div className="timeline-rail"><i className={event.agent === "人工审批" ? "human" : ""}>{event.agent === "人工审批" ? <UserRound size={12} /> : <Check size={12} />}</i>{index < ticket.audit_events.length - 1 && <span />}</div><div><div><strong>{event.agent}</strong><small>{event.duration_ms}ms</small></div><p>{serviceDisplayText(event.summary)}</p><span>{serviceDisplayText(event.action)}</span></div></div>)}</div></section>}
 
         {ticket.assessment?.quality && <section className="quality-strip"><CheckCircle2 size={16} /><div><strong>{ticket.assessment.quality.passed ? "质检通过" : "需人工复核"}</strong><span>{ticket.assessment.quality.passed ? "自动规则校验通过；语义质量仍需人工复核" : "部分检查未通过，请查看运行轨迹和失败原因"}</span></div><ChevronRight size={16} /></section>}
       </aside>

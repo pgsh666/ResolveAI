@@ -55,9 +55,8 @@ def test_cost_cache_unknown_and_demo():
 def test_migration_adopts_legacy_data_and_is_repeatable(tmp_path):
     engine = create_engine(f"sqlite:///{(tmp_path/'legacy.db').as_posix()}")
     migrate_database(engine, "0001")
-    with Session(engine) as session:
-        session.add(Ticket(id="keep", ticket_no="TKT-KEEP", customer_name="客户", subject="保留数据", message="原始消息"))
-        session.commit()
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO tickets (id,ticket_no,customer_name,customer_tier,channel,subject,message,status,priority,sla_minutes,requires_approval,created_at,updated_at) VALUES ('keep','TKT-KEEP','客户','standard','chat','保留数据','原始消息','new','medium',60,0,'2026-10-14 01:00:00','2026-10-14 01:00:00')"))
     with engine.begin() as connection:
         # Emulate a historical unversioned installation; never touch a business DB.
         connection.execute(text("DELETE FROM alembic_version"))
@@ -65,7 +64,9 @@ def test_migration_adopts_legacy_data_and_is_repeatable(tmp_path):
     migrate_database(engine)
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT message FROM tickets WHERE id='keep'")) == "原始消息"
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0002"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+        assert connection.scalar(text("SELECT ticket_no FROM tickets WHERE id='keep'")) == "26-10-14-1"
+        assert connection.scalar(text("SELECT legacy_ticket_no FROM tickets WHERE id='keep'")) == "TKT-KEEP"
         assert connection.scalar(text("SELECT count(*) FROM accounts")) == 0
     engine.dispose()
 
@@ -91,6 +92,8 @@ def test_ledger_survives_restart_and_counts_every_attempt(tmp_path, monkeypatch)
         assert report["models"]["estimated_cost_usd"] is None
         assert report["models"]["unknown_cost_calls"] == 1
         assert report["models"]["known_estimated_cost_usd"] == .002
+        assert report["models"]["complete_cost_calls"] == 2
+        assert report["models"]["recorded_average_cost_per_call_usd"] == .001
         assert report["workflow"]["p50_ms"] == 150
         assert report["workflow"]["queue"]["p50_ms"] == 50
         assert report["workflow"]["failed_runs"] == 1

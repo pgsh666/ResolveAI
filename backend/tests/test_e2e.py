@@ -12,16 +12,17 @@ from app.models import ToolExecution
 pytestmark = pytest.mark.e2e
 
 
-def test_customer_refund_approval_tool_and_confirmation_flow():
+def test_customer_refund_approval_tool_and_confirmation_flow(paid_order):
     idempotency_key = f"e2e-refund:{uuid4().hex}"
     with TestClient(app) as client:
+        order = paid_order(client)
         created = client.post(
             "/api/v1/customer/tickets",
             json={
                 "customer_name": "端到端测试用户",
                 "subject": "质量问题退款",
                 "message": "商品存在质量问题，希望退款180元。",
-                "order_id": "ORD-E2E-221",
+                "order_id": order["order_no"],
                 "amount": 180,
             },
         )
@@ -47,7 +48,7 @@ def test_customer_refund_approval_tool_and_confirmation_flow():
             json={
                 "idempotency_key": idempotency_key,
                 "arguments": {
-                    "order_id": "ORD-E2E-221",
+                    "order_id": order["order_no"],
                     "amount": 180,
                     "currency": "CNY",
                     "reason": "商品质量问题退款",
@@ -63,7 +64,7 @@ def test_customer_refund_approval_tool_and_confirmation_flow():
             json={
                 "idempotency_key": idempotency_key,
                 "arguments": {
-                    "order_id": "ORD-E2E-221",
+                    "order_id": order["order_no"],
                     "amount": 180,
                     "currency": "CNY",
                     "reason": "商品质量问题退款",
@@ -73,6 +74,9 @@ def test_customer_refund_approval_tool_and_confirmation_flow():
         assert duplicate.status_code == 200
         assert duplicate.json()["replayed"] is True
         assert duplicate.json()["id"] == executed.json()["id"]
+        refreshed_order = next(o for o in client.get("/api/v1/customer/orders").json() if o["id"] == order["id"])
+        assert refreshed_order["refunded"] == 180
+        assert [l["kind"] for l in refreshed_order["ledger"]] == ["payment", "refund"]
 
         sent = client.post(
             f"/api/v1/tickets/{ticket_id}/draft/send",
@@ -80,6 +84,8 @@ def test_customer_refund_approval_tool_and_confirmation_flow():
         )
         assert sent.status_code == 200, sent.text
         assert sent.json()["status"] == "awaiting_customer"
+        routed = next(r for r in client.get("/api/v1/questions/routes").json() if r["ticket_id"] == ticket_id)
+        assert routed["outcome"] == "human_replied" and routed["handed_off"]
 
         confirmed = client.post(
             f"/api/v1/customer/tickets/{ticket_id}/confirmation",

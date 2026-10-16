@@ -2,13 +2,20 @@
 
 import re
 
+NON_REAL_FUNDS_NOTICE = "本项目不处理真实资金，不产生真实扣款或资金到账。"
+
+
+def has_funds_disclosure(draft: str) -> bool:
+    """Accept legacy wording or the explicit non-real-money notice; never assume real settlement."""
+    return bool(re.search(r"模拟|演示", draft)) or NON_REAL_FUNDS_NOTICE in draft
+
 NEGATION = re.compile(r"尚未|还未|未曾|没有|并未|不能|不会|不代表|不表示|未执行")
 ATTRIBUTION = re.compile(r"您(?:反馈|描述|表示|提到|自述)|根据您|按您|您说")
 PENDING = re.compile(r"核验后|核实后|核实通过|审核通过后|审批通过后|批准后|符合.{0,8}条件|需.{0,5}(核实|核验|审核|审批)|待.{0,5}(审核|审批)|申请|建议")
 TIME = re.compile(r"(?:\d+|[一二三四五六七八九十]+)\s*(?:(?:至|到|[-～~])\s*(?:\d+|[一二三四五六七八九十]+))?\s*(?:个)?\s*(?:工作日|小时|分钟|天)")
 ACTION = re.compile(r"联系承运商|(?:与|向)承运商.{0,10}(?:核实|核对|调查)|催促承运商|优先催单|发起(?:优先)?催单|发起.{0,4}调查|创建.{0,4}核查单|核实.{0,8}(?:出库记录|支付流水)|核对.{0,8}出库记录|发放.{0,4}(?:关怀券|优惠券)|补发|退款|退回|核实.{0,5}照片|确认.{0,4}(?:损坏|破损)")
 PRESENT = re.compile(r"已经|现已|已为您|已帮您|已替您|我们已|正在|正为您|已(?:优先|联系|核实|核对|发起|创建|补发|退款|退回|发放|确认)")
-UI_LABELS = {"问题已解决", "仍需帮助", "新咨询", "提交问题", "采用", "改写", "发送回复", "客服工作台", "客户模拟端"}
+UI_LABELS = {"问题已解决", "仍需帮助", "新咨询", "提交问题", "采用", "改写", "发送回复", "客服工作台", "客户模拟端", "商城", "我的订单", "售后处理"}
 
 
 def clauses(text):
@@ -30,8 +37,10 @@ def check_reply_evidence(ticket, context, citations, draft):
     checks = {"action_state_has_evidence": True, "customer_claims_attributed": True,
               "fallback_not_claimed_verified": True, "time_promise_supported": True,
               "ui_entry_supported": True, "refund_promise_conditional": True,
-              "simulated_result_disclosed": not simulated or bool(re.search(r"模拟|演示", draft))}
+              "simulated_result_disclosed": not simulated or has_funds_disclosure(draft)}
     supported_times = {normalize_time(value.group()) for value in TIME.finditer(evidence)}
+    if context.get("tool_source") == "shop_database":
+        supported_times.update(f"{context[key]}天" for key in ("expected_delivery_days", "transit_days") if key in context)
     for clause in clauses(draft):
         attributed = bool(ATTRIBUTION.search(clause))
         for action in ACTION.finditer(clause):

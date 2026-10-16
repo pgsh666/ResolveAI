@@ -76,8 +76,8 @@ async function main() {
     assert.equal(pending.approval.amount, 180, 'General manual review is not authorization for a specific refund amount');
     assert.ok(pending.approval.action.includes('退款'), 'A general review cannot be treated as a refund approval');
     await clickAndWait(page.getByRole('button', { name: '批准执行', exact: true }), '/tickets/' + created.id + '/decision');
-    await clickAndWait(page.getByRole('button', { name: '执行模拟退款', exact: true }), '/tickets/' + created.id + '/tools/execute_refund/execute');
-    await page.getByRole('button', { name: '模拟退款已执行', exact: true }).waitFor();
+    await clickAndWait(page.getByRole('button', { name: '执行退款', exact: true }), '/tickets/' + created.id + '/tools/execute_refund/execute');
+    await page.getByRole('button', { name: '退款已执行', exact: true }).waitFor();
     evidence.checks.approved_simulated_refund = true;
     await clickAndWait(page.getByRole('button', { name: '改写', exact: true }), '/tickets/' + created.id + '/draft/rewrite');
     await page.getByRole('button', { name: '采用', exact: true }).click();

@@ -202,6 +202,9 @@ class ToolExecutionService:
             raise ToolExecutionError(f"工具执行失败：{error}") from error
 
         execution.result = result
+        if tool_name == "execute_refund" and result.get("success"):
+            from app.services.store import record_refund
+            record_refund(self.session, validated["order_id"], validated["amount"], f"refund:{execution.id}")
         execution.status = "completed"
         execution.completed_at = utc_now()
         self.session.add(

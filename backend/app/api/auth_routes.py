@@ -1,7 +1,6 @@
 import secrets
 from datetime import timedelta
 from hashlib import sha256
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -12,7 +11,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import Account, LoginAttempt, LoginSession, utc_now
 from app.services.auth import (COOKIE_NAME, PASSWORDS, DUMMY_HASH, authenticate, check_csrf, check_login_rate,
-                               check_origin, normalize_username, validate_password)
+                               check_origin, normalize_username, validate_password, validate_registration_password, ROLES)
 from app.services.security import redact_text
 
 router = APIRouter(prefix="/auth", tags=["accounts"])
@@ -25,14 +24,13 @@ class Credentials(BaseModel):
 
 class Registration(Credentials):
     display_name: str = Field(min_length=1, max_length=100)
-
-
-class StaffCreate(Registration):
-    role: Literal["customer", "agent", "reviewer", "admin"]
+    auto_login: bool = True
 
 
 class AccountUpdate(BaseModel):
-    role: Literal["customer", "agent", "reviewer", "admin"] | None = None
+    model_config = {"extra": "forbid"}
+    display_name: str | None = Field(default=None, min_length=1, max_length=100)
+    role: str | None = None
     active: bool | None = None
 
 
@@ -64,6 +62,8 @@ def account_view(account):
 
 
 def start_session(account, response, session):
+    if account.role not in ROLES:
+        raise HTTPException(403, "该工作人员角色已停用，请使用管理员账号")
     raw = secrets.token_urlsafe(32)
     record = LoginSession(token_hash=sha256(raw.encode()).hexdigest(), account_id=account.id,
                           csrf_token=secrets.token_urlsafe(32),
@@ -87,7 +87,7 @@ def register(payload: Registration, request: Request, response: Response, sessio
     identity = check_login_rate(request, session)
     session.add(LoginAttempt(identity_hash=identity))
     session.commit()
-    validate_password(payload.password)
+    validate_registration_password(payload.password)
     username = normalize_username(payload.username)
     reserved = {"admin", "agent", "reviewer"} | {item.get("username", "").lower() for item in get_settings().auth_bootstrap_users}
     if username in reserved:
@@ -100,7 +100,9 @@ def register(payload: Registration, request: Request, response: Response, sessio
     except IntegrityError as error:
         session.rollback()
         raise HTTPException(409, "用户名已存在") from error
-    return start_session(account, response, session)
+    if payload.auto_login:
+        return start_session(account, response, session)
+    return {"user": account_view(account), "csrf_token": ""}
 
 
 @router.post("/login")
@@ -113,6 +115,8 @@ def login(payload: Credentials, request: Request, response: Response, session=De
         session.add(LoginAttempt(identity_hash=identity))
         session.commit()
         raise HTTPException(401, "账号或密码错误")
+    if account.role not in ROLES:
+        raise HTTPException(403, "该工作人员角色已停用，请使用管理员账号")
     return start_session(account, response, session)
 
 
@@ -144,36 +148,29 @@ def admin(request, session):
 @router.get("/users")
 def users(request: Request, session=Depends(get_db)):
     actor = admin(request, session)
-    return [account_view(user) for user in session.scalars(select(Account).where(Account.workspace_id == actor.workspace_id)).all()]
+    return [account_view(session.get(Account, actor.id))]
 
 
-@router.post("/users", status_code=201)
-def create_user(payload: StaffCreate, request: Request, session=Depends(get_db)):
-    actor = admin(request, session)
-    validate_password(payload.password)
-    account = Account(username=normalize_username(payload.username), display_name=redact_text(payload.display_name),
-                      password_hash=PASSWORDS.hash(payload.password), role=payload.role, workspace_id=actor.workspace_id)
-    session.add(account)
-    try:
-        session.commit()
-    except IntegrityError as error:
-        session.rollback()
-        raise HTTPException(409, "用户名已存在") from error
-    return account_view(account)
+@router.post("/users", deprecated=True)
+def create_user(request: Request, session=Depends(get_db)):
+    admin(request, session)
+    raise HTTPException(403, "管理员只能维护自己的账号，不支持创建其他账号")
 
 
 @router.patch("/users/{user_id}")
 def update_user(user_id: str, payload: AccountUpdate, request: Request, session=Depends(get_db)):
     actor = admin(request, session)
+    if user_id != actor.id:
+        raise HTTPException(403, "管理员不能操作其他账号或客户账号")
     account = session.get(Account, user_id)
     if not account or account.workspace_id != actor.workspace_id:
         raise HTTPException(404, "账号不存在")
-    if user_id == actor.id and (payload.active is False or payload.role and payload.role != "admin"):
-        raise HTTPException(409, "不能停用或降级当前管理员账号")
-    if payload.role:
-        account.role = payload.role
-    if payload.active is not None:
-        account.active = payload.active
-    session.execute(delete(LoginSession).where(LoginSession.account_id == user_id))
+    if payload.role is not None or payload.active is not None:
+        raise HTTPException(403, "账号角色和启用状态不可修改，只能维护自己的显示名称和密码")
+    if payload.display_name is not None:
+        name = redact_text(payload.display_name.strip())
+        if not name:
+            raise HTTPException(422, "显示名称不能为空")
+        account.display_name = name
     session.commit()
     return account_view(account)

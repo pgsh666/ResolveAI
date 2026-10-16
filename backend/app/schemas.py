@@ -45,6 +45,7 @@ class KnowledgeDocumentOut(ORMModel):
     source: str
     content: str
     category: str
+    enabled: bool = True
     created_at: datetime
 
 
@@ -122,9 +123,9 @@ class TicketCreate(TicketBase):
 
 
 class CustomerTicketCreate(BaseModel):
-    customer_name: str = Field(min_length=1, max_length=100)
-    subject: str = Field(min_length=1, max_length=200)
-    message: str = Field(min_length=2, max_length=4000)
+    customer_name: str | None = Field(default=None, min_length=1, max_length=100)
+    subject: str | None = Field(default=None, min_length=1, max_length=200)
+    message: str = Field(min_length=1, max_length=4000)
     order_id: str | None = Field(
         default=None,
         min_length=2,
@@ -164,13 +165,17 @@ class CustomerTicketOut(BaseModel):
     customer_rating: int | None = None
     customer_feedback: str | None = None
     messages: list[ConversationMessage] = Field(default_factory=list)
+    handed_off: bool = False
+    handoff_reasons: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
 
 
 class TicketSummary(ORMModel):
+    case_type: Literal["consultation", "after_sales"] = "consultation"
     id: str
     ticket_no: str
+    legacy_ticket_no: str | None = None
     customer_name: str
     customer_tier: str
     channel: str
@@ -189,6 +194,14 @@ class TicketSummary(ORMModel):
     updated_at: datetime
 
 
+class CustomerFeedbackOut(BaseModel):
+    id: str
+    resolved: bool | None = None
+    rating: int | None = Field(default=None, ge=1, le=5)
+    feedback: str = ""
+    created_at: datetime | None = None
+
+
 class TicketDetail(TicketSummary):
     message: str
     draft_response: str | None = None
@@ -200,6 +213,7 @@ class TicketDetail(TicketSummary):
     audit_events: list[AuditEventOut] = []
     approval: ApprovalOut | None = None
     conversation: list[ConversationMessage] = Field(default_factory=list)
+    customer_feedbacks: list[CustomerFeedbackOut] = Field(default_factory=list)
 
 
 class DecisionRequest(BaseModel):
@@ -320,3 +334,30 @@ class ResolutionResult(BaseModel):
     refund_amount: float | None = None
     requires_approval: bool
     confidence: float = Field(ge=0, le=1)
+
+
+class ProductInput(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=4000)
+    image: str = Field(default="", max_length=2_800_000)
+    price: float = Field(ge=0.01, le=1_000_000, multiple_of=0.01, allow_inf_nan=False)
+    stock: int = Field(ge=0, le=1_000_000)
+    category: str = Field(default="其他", min_length=1, max_length=50)
+    active: bool = True
+
+
+class OrderCreate(BaseModel):
+    product_id: str
+    quantity: int = Field(ge=1, le=100)
+    address: str = Field(min_length=2, max_length=500)
+    idempotency_key: str = Field(min_length=8, max_length=100)
+
+
+class OrderAction(BaseModel):
+    action: Literal["pay", "cancel", "ship", "advance", "deliver", "sign"]
+    transit_days: int | None = Field(default=None, ge=0, le=365)
+    expected_delivery_days: int | None = Field(default=None, ge=1, le=30)
+
+
+class KnowledgeToggle(BaseModel):
+    enabled: bool

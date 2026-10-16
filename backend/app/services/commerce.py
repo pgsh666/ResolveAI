@@ -30,6 +30,7 @@ class CommerceGateway:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        self.http_requests = 0
 
     def get_customer_context(self, order_id: str | None, customer_name: str) -> dict[str, Any]:
         return asyncio.run(self.aget_customer_context(order_id, customer_name))
@@ -57,6 +58,7 @@ class CommerceGateway:
                 context["tool_fallback"] = f"MCP unavailable: {self._describe_exception(error)}"
                 context["tool_attempts"] = getattr(error, "attempts", 1)
                 context["tool_retry_count"] = max(0, context["tool_attempts"] - 1)
+                context["tool_http_requests"] = self.http_requests
                 context["tool_errors"] = getattr(
                     error,
                     "errors",
@@ -151,6 +153,7 @@ class CommerceGateway:
                     result.setdefault("tool_attempts", attempt)
                     result.setdefault("tool_retry_count", attempt - 1)
                     result.setdefault("tool_errors", errors)
+                    result["tool_http_requests"] = self.http_requests
                     return result
                 except Exception as error:
                     errors.append(self._describe_exception(error))
@@ -204,6 +207,7 @@ class CommerceGateway:
             timeout=self.settings.tool_timeout_seconds,
             trust_env=False,
         ) as client:
+            self.http_requests += 1
             initialize_response = await client.post(
                 self.settings.mcp_server_url,
                 headers=headers,
@@ -214,6 +218,7 @@ class CommerceGateway:
             if initialize_payload.get("error"):
                 raise RuntimeError(f"MCP initialize failed: {initialize_payload['error']}")
 
+            self.http_requests += 1
             tool_response = await client.post(
                 self.settings.mcp_server_url,
                 headers=headers,

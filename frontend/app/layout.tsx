@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { AppFrame } from "@/components/AppFrame";
 import { AuthProvider } from "@/components/AuthProvider";
 import "./globals.css";
+import "./ui-refresh.css";
 
 export const metadata: Metadata = {
   title: "ResolveAI · 智能客服运营台",

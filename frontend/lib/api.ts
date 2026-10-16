@@ -1,3 +1,4 @@
+import { serviceDisplayText } from "@/lib/presentation";
 import type {
   AgentRun,
   AgentTopology,
@@ -12,6 +13,7 @@ import type {
   PerformanceMetrics,
   TicketDetail,
   TicketSummary,
+  Product, ProductInput, StoreOrder, QuestionRoute,
 } from "@/lib/types";
 
 let base = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
@@ -24,7 +26,7 @@ if (typeof window !== "undefined") {
 }
 const API_URL = base;
 let csrfToken = "";
-export interface SessionUser { id: string; username: string; display_name: string; role: "customer" | "agent" | "reviewer" | "admin"; workspace_id: string; active: boolean }
+export interface SessionUser { id: string; username: string; display_name: string; role: "customer" | "admin"; workspace_id: string; active: boolean }
 interface LoginResult { user: SessionUser; csrf_token: string }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -42,7 +44,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ detail: "请求失败" }));
     if (response.status === 401 && typeof window !== "undefined" && !["/auth/login", "/auth/register"].includes(path)) window.dispatchEvent(new Event("resolveai-session-expired"));
-    throw new Error(typeof payload.detail === "string" ? payload.detail : `请求校验失败（HTTP ${response.status}）`);
+    throw new Error(typeof payload.detail === "string" ? serviceDisplayText(payload.detail) : `请求校验失败（HTTP ${response.status}）`);
   }
   return response.json() as Promise<T>;
 }
@@ -81,14 +83,22 @@ export function watchBackgroundTask(
 }
 
 export const api = {
+  products: (customer = false, q = "") => request<Product[]>(`${customer ? "/customer" : ""}/products?q=${encodeURIComponent(q)}`),
+  saveProduct: (payload: ProductInput, id?: string) => request<Product>(id ? `/products/${id}` : "/products", {method: id ? "PUT" : "POST", body: JSON.stringify(payload)}),
+  orders: (customer = false) => request<StoreOrder[]>(`${customer ? "/customer" : ""}/orders`),
+  purchase: (product_id: string, quantity: number, address: string, idempotency_key: string) => request<StoreOrder>("/customer/orders", {method: "POST", body: JSON.stringify({product_id, quantity, address, idempotency_key})}),
+  orderAction: (id: string, action: string, customer = false, extra: {transit_days?: number; expected_delivery_days?: number} = {}) => request<StoreOrder>(`${customer ? "/customer" : ""}/orders/${id}/action`, {method: "POST", body: JSON.stringify({action, ...extra})}),
+  questionRoutes: (q = "", offset = 0) => request<QuestionRoute[]>(`/questions/routes?q=${encodeURIComponent(q)}&offset=${offset}&limit=100`),
+  addFaq: (payload: KnowledgeImportInput) => request<KnowledgeDocument>("/knowledge/documents", {method: "POST", body: JSON.stringify(payload)}),
+  toggleKnowledge: (id: string, enabled: boolean) => request<KnowledgeDocument>(`/knowledge/documents/${id}`, {method: "PATCH", body: JSON.stringify({enabled})}),
+  customerHistory: () => request<CustomerTicket[]>("/customer/tickets"),
   session: async () => { const result = await request<LoginResult>("/auth/me"); csrfToken = result.csrf_token; return result.user; },
   login: async (username: string, password: string) => { const result = await request<LoginResult>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }); csrfToken = result.csrf_token; return result.user; },
-  register: async (username: string, password: string, display_name: string) => { const result = await request<LoginResult>("/auth/register", { method: "POST", body: JSON.stringify({ username, password, display_name }) }); csrfToken = result.csrf_token; return result.user; },
+  register: async (username: string, password: string, display_name: string, auto_login = true) => { const result = await request<LoginResult>("/auth/register", { method: "POST", body: JSON.stringify({ username, password, display_name, auto_login }) }); csrfToken = result.csrf_token; return result.user; },
   logout: async () => { await request("/auth/logout", { method: "POST" }); csrfToken = ""; },
   changePassword: async (current_password: string, new_password: string) => { const result = await request<LoginResult>("/auth/password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }); csrfToken = result.csrf_token; return result.user; },
   users: () => request<SessionUser[]>("/auth/users"),
-  createUser: (payload: { username: string; password: string; display_name: string; role: SessionUser["role"] }) => request<SessionUser>("/auth/users", { method: "POST", body: JSON.stringify(payload) }),
-  updateUser: (id: string, payload: { role?: SessionUser["role"]; active?: boolean }) => request<SessionUser>(`/auth/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  updateUser: (id: string, payload: { display_name: string }) => request<SessionUser>(`/auth/users/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   health: () => request<HealthData>("/health"),
   dashboard: () => request<DashboardData>("/dashboard"),
   performanceMetrics: () => request<PerformanceMetrics>("/performance/metrics"),
@@ -97,7 +107,7 @@ export const api = {
   knowledgeDocuments: () => request<KnowledgeDocument[]>("/knowledge/documents"),
   knowledgeDocument: (id: string) => request<KnowledgeDocument>(`/knowledge/documents/${id}`),
   searchKnowledge: (query: string) => request<KnowledgeSearchResult>(`/knowledge/search?q=${encodeURIComponent(query)}`),
-  tickets: (status = "all") => request<TicketSummary[]>(`/tickets?status=${status}`),
+  tickets: (status = "all", caseType: "all" | "consultation" | "after_sales" = "all") => request<TicketSummary[]>(`/tickets?status=${status}&case_type=${caseType}`),
   ticket: (id: string) => request<TicketDetail>(`/tickets/${id}`),
   analyze: (id: string) => request<TicketDetail>(`/tickets/${id}/analyze`, { method: "POST" }),
   startAgentAnalysis: (id: string) => request<BackgroundTask>(`/tasks/agent-analysis/${id}`, { method: "POST" }),

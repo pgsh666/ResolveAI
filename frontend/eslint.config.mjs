@@ -7,5 +7,5 @@ export default defineConfig([
   js.configs.recommended,
   ...tseslint.configs.recommended,
   { files: ["**/*.{ts,tsx}"], plugins: { "react-hooks": reactHooks }, rules: reactHooks.configs.recommended.rules },
-  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts"]),
+  globalIgnores([".next/**", ".next-commerce-test/**", "out/**", "build/**", "next-env.d.ts"]),
 ]);

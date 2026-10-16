@@ -38,6 +38,7 @@ class Ticket(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
     ticket_no: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    legacy_ticket_no: Mapped[str | None] = mapped_column(String(30), nullable=True)
     customer_name: Mapped[str] = mapped_column(String(100))
     customer_tier: Mapped[str] = mapped_column(String(20), default="standard")
     channel: Mapped[str] = mapped_column(String(20), default="chat")
@@ -60,6 +61,11 @@ class Ticket(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+    @property
+    def case_type(self) -> str:
+        from app.services.service_cases import conversation_case_type
+        return conversation_case_type(self)
 
 
 class AuditEvent(Base):
@@ -223,6 +229,7 @@ class KnowledgeDocument(Base):
     source: Mapped[str] = mapped_column(String(300))
     content: Mapped[str] = mapped_column(Text)
     category: Mapped[str] = mapped_column(String(50), default="general")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     embedding: Mapped[list[float]] = mapped_column(embedding_type)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -299,3 +306,86 @@ class ModelUsage(Base):
     model: Mapped[str] = mapped_column(String(100))
     usage: Mapped[dict[str, Any]] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class DailySequence(Base):
+    __tablename__ = "daily_sequences"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Product(Base):
+    __tablename__ = "products"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    workspace_id: Mapped[str] = mapped_column(String(80), index=True, default="default")
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text)
+    image: Mapped[str] = mapped_column(Text, default="")
+    price_cents: Mapped[int] = mapped_column(Integer)
+    stock: Mapped[int] = mapped_column(Integer)
+    category: Mapped[str] = mapped_column(String(50), default="其他")
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class StoreOrder(Base):
+    __tablename__ = "store_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    order_no: Mapped[str] = mapped_column(String(30), unique=True, index=True)
+    request_key: Mapped[str] = mapped_column(String(150), unique=True)
+    owner_id: Mapped[str] = mapped_column(String(36), index=True)
+    workspace_id: Mapped[str] = mapped_column(String(80), index=True)
+    customer_name: Mapped[str] = mapped_column(String(100))
+    product_id: Mapped[str] = mapped_column(String(36), ForeignKey("products.id"))
+    product_name: Mapped[str] = mapped_column(String(120))
+    quantity: Mapped[int] = mapped_column(Integer)
+    unit_price_cents: Mapped[int] = mapped_column(Integer)
+    total_cents: Mapped[int] = mapped_column(Integer)
+    refunded_cents: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(30), default="pending_payment", index=True)
+    address: Mapped[str] = mapped_column(String(500))
+    expected_delivery_days: Mapped[int] = mapped_column(Integer, default=3)
+    transit_days: Mapped[int] = mapped_column(Integer, default=0)
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class OrderEvent(Base):
+    __tablename__ = "order_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    order_id: Mapped[str] = mapped_column(String(36), ForeignKey("store_orders.id"), index=True)
+    status: Mapped[str] = mapped_column(String(30))
+    description: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class PaymentLedger(Base):
+    __tablename__ = "payment_ledger"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    order_id: Mapped[str] = mapped_column(String(36), ForeignKey("store_orders.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(30))
+    amount_cents: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(150), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class QuestionRoute(Base):
+    __tablename__ = "question_routes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    ticket_id: Mapped[str] = mapped_column(String(36), ForeignKey("tickets.id"), index=True)
+    message_id: Mapped[str] = mapped_column(String(80), unique=True)
+    question: Mapped[str] = mapped_column(Text)
+    request_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(40), default="processing")
+    route: Mapped[str] = mapped_column(String(80), default="agent")
+    api_requests: Mapped[int] = mapped_column(Integer, default=0)
+    model_requests: Mapped[int] = mapped_column(Integer, default=0)
+    tool_requests: Mapped[int] = mapped_column(Integer, default=0)
+    total_ms: Mapped[float] = mapped_column(Float, default=0)
+    steps: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    degraded: Mapped[bool] = mapped_column(Boolean, default=False)
+    handed_off: Mapped[bool] = mapped_column(Boolean, default=False)
+    handoff_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)

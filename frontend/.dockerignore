@@ -1,5 +1,5 @@
 .env.local
 node_modules/
-.next/
+.next*/
 out/
 npm-debug.log*

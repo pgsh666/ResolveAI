@@ -226,13 +226,13 @@ try {
         Write-Host "Support console: http://localhost:3000"
         Write-Host "Customer portal: http://localhost:3000/customer"
         Write-Host "Login credentials: private project-root .env.auth; customers can register on the login page."
+        Write-Host "Customer pages require a customer account. For simultaneous staff/customer testing, use separate browser profiles or a private window."
         Write-Host "Swagger:         http://localhost:8000/docs"
         Write-Host "Jaeger:          http://localhost:16686"
         Write-Host "To stop services and keep your data: docker compose stop"
         if (-not $NoBrowser) {
             try {
                 Start-Process "http://localhost:3000"
-                Start-Process "http://localhost:3000/customer"
             }
             catch {
                 Write-Warning "Services are ready, but the browser could not open automatically. Open the URLs above."

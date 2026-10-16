@@ -185,6 +185,14 @@ def get_performance_registry() -> PerformanceRegistry:
     return PerformanceRegistry()
 
 
+def _has_complete_cost(item: dict) -> bool:
+    cost = item.get("estimated_cost_usd")
+    return (isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            and math.isfinite(cost) and cost >= 0
+            and item.get("cost_complete") is not False
+            and item.get("usage_available") is not False)
+
+
 def build_performance_report(session: Session) -> dict:
     settings = get_settings()
     from app.services.auth import ticket_scope
@@ -195,6 +203,7 @@ def build_performance_report(session: Session) -> dict:
     ledger_tickets = {row.ticket_id for row in ledger}
     workflow_durations: list[float] = []
     model_rows: list[dict] = [row.usage for row in ledger]
+    legacy_trace_calls = 0
     for ticket in tickets:
         assessment = ticket.assessment or {}
         duration = (assessment.get("observability") or {}).get("workflow_duration_ms")
@@ -202,8 +211,8 @@ def build_performance_report(session: Session) -> dict:
             workflow_durations.append(float(duration))
         for item in assessment.get("model_trace") or []:
             if ticket.id not in ledger_tickets and not item.get("skipped"):
-                # Old final traces cannot prove retry-level accounting completeness.
-                model_rows.append({**item, "estimated_cost_usd": None, "legacy_snapshot": True})
+                # Retain old snapshots for diagnostics, never mix them into ledger averages.
+                legacy_trace_calls += 1
 
     by_model: defaultdict[str, dict[str, float | int]] = defaultdict(
         lambda: {"calls": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "estimated_cost_usd": 0.0}
@@ -213,12 +222,14 @@ def build_performance_report(session: Session) -> dict:
         bucket["calls"] += 1
         for name in ("input_tokens", "output_tokens", "total_tokens"):
             bucket[name] += int(item.get(name) or 0)
-        bucket["estimated_cost_usd"] += float(item.get("estimated_cost_usd") or 0)
+        if _has_complete_cost(item):
+            bucket["estimated_cost_usd"] += float(item["estimated_cost_usd"])
 
     total_calls = len(model_rows)
     total_tokens = sum(int(item.get("total_tokens") or 0) for item in model_rows)
-    total_cost = sum(float(item.get("estimated_cost_usd") or 0) for item in model_rows)
-    unknown = sum(item.get("estimated_cost_usd") is None for item in model_rows)
+    cost_rows = [item for item in model_rows if _has_complete_cost(item)]
+    total_cost = sum(float(item["estimated_cost_usd"]) for item in cost_rows)
+    unknown = total_calls - len(cost_rows)
     customer_cycle = []
     for ticket in tickets:
         confirmation = (ticket.assessment or {}).get("customer_confirmation") or {}
@@ -252,6 +263,9 @@ def build_performance_report(session: Session) -> dict:
             "estimated_cost_usd": None if unknown else round(total_cost, 8),
             "known_estimated_cost_usd": round(total_cost, 8),
             "average_cost_per_call_usd": None if unknown or not total_calls else round(total_cost / total_calls, 8),
+            "complete_cost_calls": len(cost_rows),
+            "recorded_average_cost_per_call_usd": round(total_cost / len(cost_rows), 8) if cost_rows else None,
+            "recorded_cost_scope": "complete-model-usage-ledger-only",
             "unknown_cost_calls": unknown,
             "cost_complete": not unknown,
             "cost_is_invoice": False,
@@ -259,14 +273,14 @@ def build_performance_report(session: Session) -> dict:
             "cost_upper_usd": None if unknown else round(sum(item.get("cost_upper_usd") or 0 for item in model_rows), 8),
             "failed_attempts": sum(item.get("status") == "error" for item in model_rows),
             "ledger_calls": len(ledger),
-            "legacy_trace_calls": len(model_rows) - len(ledger),
+            "legacy_trace_calls": legacy_trace_calls,
             "real_api_attempts": sum(row.usage.get("provider") in {"deepseek", "openai"} for row in ledger),
             "real_api_tokens": sum(int(row.usage.get("total_tokens") or 0) for row in ledger
                                    if row.usage.get("provider") in {"deepseek", "openai"} and row.usage.get("usage_available")),
             "demo_calls": sum(row.usage.get("provider") == "demo" for row in ledger),
             "by_model": [
                 {"model": model, **values, "estimated_cost_usd": round(float(values["estimated_cost_usd"]), 8)
-                 if all(row.get("estimated_cost_usd") is not None for row in model_rows if (row.get("model") or "unknown") == model) else None}
+                 if all(_has_complete_cost(row) for row in model_rows if (row.get("model") or "unknown") == model) else None}
                 for model, values in sorted(by_model.items())
             ],
             "routing": {

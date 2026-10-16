@@ -69,7 +69,7 @@ export function Dashboard() {
       <section className="dashboard-grid primary-grid" id="analytics">
         <article className="panel chart-panel">
           <div className="panel-heading">
-            <div><h2>工单处理趋势</h2></div>
+            <div><h2>对话处理趋势</h2></div>
             <div className="legend"><span><i className="dot automated" />Agent 自动处理</span><span><i className="dot manual" />人工处理</span></div>
           </div>
           <div className="bar-chart">
@@ -88,7 +88,7 @@ export function Dashboard() {
         <article className="panel category-panel">
           <div className="panel-heading"><div><h2>问题分布</h2></div><button className="ghost-link">本周</button></div>
           <div className="donut-wrap">
-            <div className="donut" style={{ background: donutBackground }}><div><strong>{tickets.length}</strong><span>总工单</span></div></div>
+            <div className="donut" style={{ background: donutBackground }}><div><strong>{tickets.length}</strong><span>总对话</span></div></div>
             <div className="category-list">
               {data.categories.map((item) => <div key={item.name}><span><i style={{ background: item.color }} />{item.name}</span><strong>{item.value}%</strong></div>)}
             </div>
@@ -118,12 +118,12 @@ export function Dashboard() {
           <div className="approval-orb"><ShieldCheck size={26} /></div>
           <h2>{data.pending_approvals > 0 ? <>{data.pending_approvals} 个高风险动作<br />等待您的确认</> : <>当前没有高风险动作<br />等待人工确认</>}</h2>
           <p>退款、补偿等资金操作必须经过人工审批，所有决策都写入审计轨迹。</p>
-          <Link className="primary-button light" href="/tickets"><span>进入审批台</span><ArrowUpRight size={17} /></Link>
+          <Link className="primary-button light" href="/chats?status=pending_approval"><span>查看待人工对话</span><ArrowUpRight size={17} /></Link>
         </article>
       </section>
 
       <section className="panel ticket-preview">
-        <div className="panel-heading"><div><h2>最近工单</h2></div><Link className="ghost-link" href="/tickets">查看全部 <ArrowUpRight size={15} /></Link></div>
+        <div className="panel-heading"><div><h2>最近对话</h2></div><Link className="ghost-link" href="/chats">查看全部 <ArrowUpRight size={15} /></Link></div>
         <div className="ticket-table">
           <div className="ticket-row ticket-head"><span>工单</span><span>客户</span><span>优先级</span><span>状态</span><span>Agent 判断</span><span /></div>
           {tickets.slice(0, 4).map((ticket) => <div className="ticket-row" key={ticket.id}>
@@ -132,7 +132,7 @@ export function Dashboard() {
             <span><i className={`priority-dot ${ticket.priority}`} />{priorityLabel(ticket.priority)}</span>
             <span className={`status-badge ${ticket.status}`}>{statusLabel(ticket.status)}</span>
             <span>{ticket.category ? `${categoryLabel(ticket.category)} · ${Math.round((ticket.confidence ?? 0) * 100)}%` : "等待分析"}</span>
-            <Link href={`/tickets/${ticket.id}`} aria-label={`查看${ticket.ticket_no}`}><ArrowUpRight size={17} /></Link>
+            <Link href={`/${ticket.case_type === "after_sales" ? "tickets" : "chats"}/${ticket.id}`} aria-label={`查看${ticket.ticket_no}`}><ArrowUpRight size={17} /></Link>
           </div>)}
         </div>
       </section>

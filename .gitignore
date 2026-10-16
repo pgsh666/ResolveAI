@@ -35,8 +35,10 @@ Thumbs.db
 
 # Local build sources and generated artifacts
 .build/
+# Isolated browser verification builds
+frontend/.next-commerce-test/
 
-# Private/local files in the publication copy
+# Publication hygiene: templates only; never commit local runtime data.
 .env.*
 !.env.example
 !.env.local.example
@@ -45,15 +47,20 @@ Thumbs.db
 *.sqlite-*
 *.sqlite3-*
 *.dump
+*.backup
+*.bak
 *.har
 *.webm
+*.mp4
 *.zip
-tmp/
+*.pem
+*.key
+*.tsbuildinfo
 github-upload/
 .upload-local/
-playwright-report/
-test-results/
-
-# Local evaluation and acceptance outputs can contain operational/database-derived data.
+.run/
+tmp/
 output/
 backend/evaluation/reports/
+playwright-report/
+test-results/

@@ -71,8 +71,8 @@ export function Analytics() {
       {performance && <section className="feature-metrics">
         <AnalyticsMetric icon={Gauge} label="API 响应时间" value={`${performance.http.p50_ms} ms`} detail={`P95 ${performance.http.p95_ms} ms · ${performance.http.samples} 个样本`} tone="blue" />
         <AnalyticsMetric icon={Zap} label="检索缓存命中率" value={`${Math.round(performance.retrieval_cache.hit_rate * 100)}%`} detail={`${performance.retrieval_cache.hits} 次命中 / ${performance.retrieval_cache.misses} 次未命中`} tone="teal" />
-        <AnalyticsMetric icon={Bot} label="记录平均 Token" value={String(Math.round(performance.models.average_tokens_per_call))} detail={`${performance.models.ledger_calls} 次有台账调用 · ${performance.models.legacy_trace_calls} 条旧版摘要`} tone="purple" />
-        <AnalyticsMetric icon={Activity} label="平均估算成本（非账单）" value={performance.models.average_cost_per_call_usd === null ? "用量或费率未知" : `$${performance.models.average_cost_per_call_usd.toFixed(6)}`} detail={`已知部分 $${performance.models.known_estimated_cost_usd.toFixed(6)} · ${performance.models.unknown_cost_calls} 次费用未知`} tone="orange" />
+        <AnalyticsMetric icon={Bot} label="记录平均 Token" value={String(Math.round(performance.models.average_tokens_per_call))} detail={`基于 ${performance.models.ledger_calls} 次有台账调用`} tone="purple" />
+        <AnalyticsMetric icon={Activity} label="平均估算成本（非账单）" value={performance.models.recorded_average_cost_per_call_usd == null ? "暂无完整费用记录" : `$${performance.models.recorded_average_cost_per_call_usd.toFixed(6)}`} detail={`基于 ${performance.models.complete_cost_calls ?? 0} 次完整记录 · 合计 $${performance.models.known_estimated_cost_usd.toFixed(6)}`} tone="orange" className="recorded-cost-metric" />
         <AnalyticsMetric icon={Gauge} label="Agent 端到端耗时" value={`${(performance.workflow.p50_ms / 1000).toFixed(2)} 秒`} detail={`含排队 · P95 ${(performance.workflow.p95_ms / 1000).toFixed(2)} 秒 · ${performance.workflow.failed_runs} 次失败 · 不含人工等待`} tone="blue" />
         <AnalyticsMetric icon={CheckCircle2} label="客户确认解决周期" value={performance.workflow.customer_resolution_cycle.samples ? `${(performance.workflow.customer_resolution_cycle.p50_ms / 60000).toFixed(1)} 分钟` : "暂无客户确认样本"} detail={`从提交到客户确认 · 含人工等待 · ${performance.workflow.customer_resolution_cycle.samples} 个已确认样本`} tone="teal" />
       </section>}
@@ -120,6 +120,6 @@ export function Analytics() {
   );
 }
 
-function AnalyticsMetric({ icon: Icon, label, value, detail, tone }: { icon: typeof Activity; label: string; value: string; detail: string; tone: string }) {
-  return <article className="feature-metric panel"><div className={`feature-metric-icon ${tone}`}><Icon size={19} /></div><div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div></article>;
+function AnalyticsMetric({ icon: Icon, label, value, detail, tone, className = "" }: { icon: typeof Activity; label: string; value: string; detail: string; tone: string; className?: string }) {
+  return <article className={`feature-metric panel ${className}`}><div className={`feature-metric-icon ${tone}`}><Icon size={19} /></div><div><span>{label}</span><strong title={value}>{value}</strong><small title={detail}>{detail}</small></div></article>;
 }

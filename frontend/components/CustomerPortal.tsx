@@ -1,286 +1,234 @@
 "use client";
 
-import Link from "next/link";
 import Image from "next/image";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import {
-  Check,
-  CheckCircle2,
-  ChevronRight,
-  Circle,
-  Clock3,
-  Headphones,
-  LoaderCircle,
-  MessageCircleMore,
-  RotateCcw,
-  Send,
-  Star,
-  UserRound,
-} from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { CheckCircle2, LoaderCircle, MessageCircleMore, Plus, Send, Star, UserRound } from "lucide-react";
 import { api } from "@/lib/api";
-import { SessionActions, useAuth } from "@/components/AuthProvider";
-import type { CustomerTicket, CustomerTicketCreateInput, CustomerTicketStage } from "@/lib/types";
+import { useAuth } from "@/components/AuthProvider";
+import { CustomerHeader } from "@/components/CustomerHeader";
+import { formatBusinessTime } from "@/lib/time";
+import { serviceDisplayText } from "@/lib/presentation";
+import type { CustomerTicket, CustomerTicketStage } from "@/lib/types";
 
-
-const issueOptions = [
-  "退款与售后",
-  "物流进度异常",
-  "支付问题",
-  "商品问题",
-  "账号与登录",
-  "其他问题",
-];
-
-const stageCopy: Record<CustomerTicketStage, { label: string; description: string }> = {
-  submitted: { label: "待处理", description: "客服平台已收到您的问题" },
-  processing: { label: "处理中", description: "智能客服正在分析问题与订单信息" },
-  reviewing: { label: "处理中", description: "处理方案正在进行人工确认" },
-  answered: { label: "处理中", description: "客服已回复，请确认问题是否解决" },
-  resolved: { label: "已解决", description: "感谢您确认本次服务结果" },
-  follow_up: { label: "处理中", description: "您的反馈已转交客服继续处理" },
+const stageLabels: Record<CustomerTicketStage, string> = {
+  submitted: "等待回复", processing: "正在回复", reviewing: "人工处理中",
+  answered: "已回复", resolved: "对话已结束", follow_up: "继续为您提供帮助",
 };
-
-const progressSteps = ["待处理", "处理中", "已解决"];
-
-function stageIndex(stage: CustomerTicketStage) {
-  return ({ submitted: 0, processing: 1, reviewing: 1, answered: 1, resolved: 2, follow_up: 1 } as const)[stage];
-}
-
-function timeLabel(value: string) {
-  return new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-}
+const suggestions = ["帮我找一款蓝牙耳机", "比较商城商品价格", "查看我的订单物流"];
 
 export function CustomerPortal() {
   const { user } = useAuth();
-  const STORAGE_KEY = `resolveai_customer_ticket_id:${user?.id ?? "anonymous"}`;
-  const mascotRef = useRef<HTMLDivElement>(null);
+  const storageKey = `resolveai_customer_ticket_id:${user?.id ?? "anonymous"}`;
   const [ticket, setTicket] = useState<CustomerTicket | null>(null);
+  const [history, setHistory] = useState<CustomerTicket[]>([]);
+  const [boundOrder, setBoundOrder] = useState<string | null>(null);
   const [restoring, setRestoring] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [confirming, setConfirming] = useState<"resolved" | "follow_up" | null>(null);
+  const [sending, setSending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState("");
+  const [messageText, setMessageText] = useState("");
   const [error, setError] = useState("");
   const [rating, setRating] = useState(5);
   const [feedback, setFeedback] = useState("");
-  const [messageText, setMessageText] = useState("");
-  const [sendingMessage, setSendingMessage] = useState(false);
-  const [form, setForm] = useState({
-    customer_name: "",
-    subject: issueOptions[0],
-    order_id: "",
-    amount: "",
-    message: "",
-  });
+  const [confirming, setConfirming] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const sendingRef = useRef(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const chatEnd = useRef<HTMLDivElement>(null);
   const ticketId = ticket?.id;
   const ticketStage = ticket?.stage;
+  const lastMessage = ticket?.messages.at(-1);
+  const messages = ticket?.messages ?? [];
+  const busy = sending || confirming || restoring;
+  const round = Math.max(messages.filter(m => m.role === "customer").length - 1, 0);
+  const mascotTop = 98 + Math.min(round, 5) * 94;
 
   useEffect(() => {
-    const savedId = window.localStorage.getItem(STORAGE_KEY);
-    if (!savedId) {
-      const timer = window.setTimeout(() => setRestoring(false), 0);
-      return () => window.clearTimeout(timer);
-    }
-    api.customerTicket(savedId)
-      .then(setTicket)
-      .catch(() => window.localStorage.removeItem(STORAGE_KEY))
-      .finally(() => setRestoring(false));
-  }, [STORAGE_KEY]);
+    let active = true;
+    const order = new URLSearchParams(window.location.search).get("order");
+    const savedId = window.localStorage.getItem(storageKey);
+    api.customerHistory().then(async items => {
+      if (!active) return;
+      setHistory(items);
+      if (order) {
+        setBoundOrder(order);
+        setTicket(null);
+      } else if (savedId) {
+        try {
+          const saved = await api.customerTicket(savedId);
+          if (active) setTicket(saved);
+        } catch {
+          window.localStorage.removeItem(storageKey);
+        }
+      }
+    }).catch(() => undefined).finally(() => { if (active) setRestoring(false); });
+    return () => { active = false; };
+  }, [storageKey]);
 
   useEffect(() => {
-    if (!ticketId || ticketStage === "resolved") return;
+    if (!ticketId || ticketStage === "resolved" || sending) return;
+    let active = true;
     const timer = window.setInterval(() => {
-      api.customerTicket(ticketId).then(setTicket).catch(() => undefined);
+      api.customerTicket(ticketId).then(value => { if (active) setTicket(value); }).catch(() => undefined);
     }, 3000);
-    return () => window.clearInterval(timer);
-  }, [ticketId, ticketStage]);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [ticketId, ticketStage, sending]);
 
   useEffect(() => {
-    function followPointer(event: PointerEvent) {
-      const mascot = mascotRef.current;
-      if (!mascot) return;
-      const bounds = mascot.getBoundingClientRect();
-      const centerX = bounds.left + bounds.width / 2;
-      const centerY = bounds.top + bounds.height * .58;
-      const x = Math.max(-1, Math.min(1, (event.clientX - centerX) / Math.max(bounds.width * .55, 1)));
-      const y = Math.max(-1, Math.min(1, (event.clientY - centerY) / Math.max(bounds.height * .65, 1)));
-      mascot.style.setProperty("--look-x", `${(x * 3).toFixed(2)}px`);
-      mascot.style.setProperty("--look-y", `${(y * 2).toFixed(2)}px`);
-      mascot.style.setProperty("--look-rotate", `${(x * .65).toFixed(2)}deg`);
-    }
+    chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [ticket?.messages.length, pendingMessage]);
 
-    window.addEventListener("pointermove", followPointer, { passive: true });
-    return () => window.removeEventListener("pointermove", followPointer);
-  }, []);
+  useEffect(() => {
+    if (!busy) composerRef.current?.focus();
+  }, [busy, ticketId]);
 
-  const currentStage = useMemo(() => ticket ? stageCopy[ticket.stage] : null, [ticket]);
-  const lastMessage = ticket?.messages[ticket.messages.length - 1];
-  const conversationRound = Math.max(Math.ceil((ticket?.messages.length ?? 1) / 2) - 1, 0);
-  const mascotTop = 108 + Math.min(conversationRound, 6) * 138;
+  async function reloadHistory() {
+    try { setHistory(await api.customerHistory()); } catch { /* The active chat is already saved. */ }
+  }
 
-  async function submitTicket(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSubmitting(true);
+  async function sendMessage(text: string) {
+    const content = text.trim();
+    if (!content || sendingRef.current || confirming || restoring) return;
+    sendingRef.current = true;
+    setSending(true);
+    setPendingMessage(content);
+    setMessageText("");
     setError("");
-    const payload: CustomerTicketCreateInput = {
-      customer_name: form.customer_name.trim(),
-      subject: form.subject,
-      message: form.message.trim(),
-      order_id: form.order_id.trim() || null,
-      amount: form.amount ? Number(form.amount) : null,
-    };
+    setFeedbackOpen(false);
     try {
-      const created = await api.createCustomerTicket(payload);
-      window.localStorage.setItem(STORAGE_KEY, created.id);
-      setTicket(created);
+      let updated: CustomerTicket;
+      if (!ticket || ticket.stage === "resolved") {
+        if (ticket?.stage === "resolved") setTicket(null);
+        updated = await api.createCustomerTicket({ message: content, order_id: boundOrder });
+      } else {
+        updated = await api.sendCustomerMessage(ticket.id, content);
+      }
+      window.localStorage.setItem(storageKey, updated.id);
+      setTicket(updated);
+      setFeedback("");
+      setRating(5);
+      await reloadHistory();
     } catch (reason) {
       setError((reason as Error).message);
+      setMessageText(content);
     } finally {
-      setSubmitting(false);
+      setPendingMessage("");
+      setSending(false);
+      sendingRef.current = false;
     }
+  }
+
+  function submitMessage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    void sendMessage(messageText);
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+      event.preventDefault();
+      event.currentTarget.form?.requestSubmit();
+    }
+  }
+
+  async function openConversation(id: string) {
+    if (busy || id === ticketId) return;
+    setRestoring(true);
+    setError("");
+    setFeedbackOpen(false);
+    setBoundOrder(null);
+    setMessageText("");
+    try {
+      const selected = await api.customerTicket(id);
+      setTicket(selected);
+      window.localStorage.setItem(storageKey, id);
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally { setRestoring(false); }
+  }
+
+  function startNewConversation() {
+    if (busy) return;
+    window.localStorage.removeItem(storageKey);
+    window.history.replaceState(null, "", "/customer");
+    setTicket(null);
+    setBoundOrder(null);
+    setMessageText("");
+    setRating(5);
+    setFeedback("");
+    setFeedbackOpen(false);
+    setError("");
   }
 
   async function confirmResult(resolved: boolean) {
-    if (!ticket) return;
-    setConfirming(resolved ? "resolved" : "follow_up");
+    if (!ticket || busy) return;
+    setConfirming(true);
     setError("");
     try {
       setTicket(await api.confirmCustomerTicket(ticket.id, resolved, rating, feedback.trim()));
+      setFeedbackOpen(false);
+      await reloadHistory();
     } catch (reason) {
       setError((reason as Error).message);
-    } finally {
-      setConfirming(null);
-    }
-  }
-
-  async function sendFollowUp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!ticket || !messageText.trim()) return;
-    setSendingMessage(true);
-    setError("");
-    try {
-      setTicket(await api.sendCustomerMessage(ticket.id, messageText.trim()));
-      setMessageText("");
-      setFeedback("");
-      setRating(5);
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setSendingMessage(false);
-    }
-  }
-
-  function startNewTicket() {
-    window.localStorage.removeItem(STORAGE_KEY);
-    setTicket(null);
-    setRating(5);
-    setFeedback("");
-    setError("");
-    setForm({ customer_name: form.customer_name, subject: issueOptions[0], order_id: "", amount: "", message: "" });
-  }
-
-  if (restoring) {
-    return <div className="customer-loading"><LoaderCircle className="spin" size={28} /><span>正在恢复咨询记录…</span></div>;
+    } finally { setConfirming(false); }
   }
 
   return (
-    <div className="customer-portal">
-      <header className="customer-header">
-        <div className="customer-brand"><div><strong>ResolveAI 在线客服</strong><small>随时为您解决问题</small></div></div>
-        <SessionActions />
-        {user?.role !== "customer" && <Link href="/">进入客服工作台<ChevronRight size={16} /></Link>}
-      </header>
+    <div className="customer-portal assistant-portal">
+      <CustomerHeader />
+      <main className="assistant-workspace">
+        <aside className="assistant-history panel" aria-label="对话记录">
+          <button type="button" className="assistant-new-chat" disabled={busy} onClick={startNewConversation}><Plus size={17} />新对话</button>
+          <h2>对话记录</h2>
+          <div className="assistant-history-list">
+            {history.map(item => <button type="button" className={item.id === ticketId ? "active" : ""} disabled={busy} key={item.id} onClick={() => void openConversation(item.id)}><MessageCircleMore size={16} /><span><strong>{item.subject}</strong><small>{item.ticket_no}</small></span></button>)}
+            {!history.length && <p>您的对话会保存在这里。</p>}
+          </div>
+        </aside>
 
-      {!ticket ? (
-        <main className="customer-entry">
-          <section className="customer-welcome">
-            <h1><span>您好</span><span>有什么可以帮到您？</span></h1>
-            <div className="customer-mascot" ref={mascotRef} aria-hidden="true">
-              <svg viewBox="0 0 1365 1136" role="presentation">
-                <image href="/customer-mascot-wave.png" width="1365" height="1136" />
-              </svg>
-            </div>
-          </section>
+        <section className="customer-chat-card assistant-chat-card" aria-label="电商客服聊天">
+          {ticket && <div className="customer-chat-mascot" style={{ top: `${mascotTop}px` }} aria-hidden="true"><Image src="/customer-mascot-peek-v4.png" alt="" width={1024} height={1536} sizes="128px" /></div>}
+          <header className="customer-chat-head">
+            <div><div className="customer-message-avatar customer-support-avatar"><Image src="/customer-mascot-original.jpg" alt="电商智能客服" width={1192} height={1197} sizes="54px" /></div><div><strong>ResolveAI 电商智能客服</strong><small>{sending ? "正在为您回复…" : ticket?.handed_off ? "人工客服正在接续处理" : ticket ? stageLabels[ticket.stage] : "商品、订单、物流与售后，直接向我提问"}</small></div></div>
+            <div>{ticket && <span>{ticket.ticket_no}</span>}<button type="button" disabled={busy} onClick={startNewConversation}><Plus size={14} />新对话</button></div>
+          </header>
 
-          <form className="customer-form" onSubmit={submitTicket}>
-            <div className="customer-form-title"><div><h2>发起在线咨询</h2><p>请描述您遇到的问题</p></div><span><MessageCircleMore size={20} /></span></div>
-            <label><span>您的称呼</span><input required maxLength={100} value={form.customer_name} onChange={(event) => setForm({ ...form, customer_name: event.target.value })} placeholder="例如：林晓雨" /></label>
-            <label><span>问题类型</span><select value={form.subject} onChange={(event) => setForm({ ...form, subject: event.target.value })}>{issueOptions.map((option) => <option key={option}>{option}</option>)}</select></label>
-            <div className="customer-form-row">
-              <label><span>订单编号（选填）</span><input maxLength={30} value={form.order_id} onChange={(event) => setForm({ ...form, order_id: event.target.value })} placeholder="例如：ORD-8821" /></label>
-              <label><span>涉及金额（选填）</span><input min="0" step="0.01" type="number" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} placeholder="0.00" /></label>
-            </div>
-            <label><span>问题描述</span><textarea required minLength={2} maxLength={4000} rows={5} value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} placeholder="请尽量说明发生了什么，以及您希望如何处理…" /></label>
-            {error && <div className="customer-error">{error}</div>}
-            <button className="customer-submit" type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}{submitting ? "正在提交…" : "提交问题"}</button>
-            <small className="customer-privacy">提交后将生成一张真实工单，信息仅用于本项目流程演示。</small>
-          </form>
-        </main>
-      ) : (
-        <main className="customer-workspace">
-          <section className="customer-chat-card">
-            <div className="customer-chat-mascot" style={{ top: `${mascotTop}px` }} aria-hidden="true">
-              <Image src="/customer-mascot-peek-v4.png" alt="" width={1024} height={1536} />
-            </div>
-            <header className="customer-chat-head">
-              <div><span className={`customer-stage-dot ${ticket.stage}`} /><div><strong>{currentStage?.label}</strong><small>{currentStage?.description}</small></div></div>
-              <div><span>{ticket.ticket_no}</span><button type="button" onClick={startNewTicket}><RotateCcw size={14} />新咨询</button></div>
-            </header>
+          <div className="customer-chat-body assistant-chat-body" role="log" aria-live="polite" aria-label="对话消息">
+            {restoring ? <div className="assistant-restoring"><LoaderCircle className="spin" size={23} /><span>正在加载对话…</span></div> : <>
+              {!ticket && !pendingMessage && <div className="assistant-welcome">
+                <Image src="/customer-mascot-wave.png" alt="" width={1365} height={1136} sizes="(max-width: 700px) 120px, 175px" className="assistant-welcome-mascot" preload />
+                <h1><span>您好</span><span>有什么可以帮到您？</span></h1>
+                <div className="assistant-suggestions">{suggestions.map(text => <button type="button" disabled={busy} key={text} onClick={() => void sendMessage(text)}>{text}</button>)}</div>
+              </div>}
+              {boundOrder && !ticket && <div className="assistant-order-context">本次对话关联订单 {boundOrder}。您可以直接描述想了解的内容。<button type="button" disabled={busy} onClick={() => setBoundOrder(null)}>取消关联</button></div>}
+              {ticket?.handed_off && <div className="commerce-notice">已转人工客服：{ticket.handoff_reasons.join("；") || "需要进一步核验"}。您可以继续在此对话补充信息。</div>}
+              {messages.map(message => <div className={`customer-message-row ${message.role === "customer" ? "user" : "support"}`} key={message.id}>
+                {message.role === "customer" ? <div className="customer-message-avatar"><UserRound size={18} /></div> : <div className="customer-message-avatar customer-support-avatar"><Image src="/customer-mascot-original.jpg" alt="电商智能客服" width={1192} height={1197} sizes="54px" /></div>}
+                <div><span>{message.role === "customer" ? ticket?.customer_name : "ResolveAI"} · {formatBusinessTime(message.created_at, {hour: "2-digit", minute: "2-digit"})}</span><div className="customer-bubble"><p>{message.role === "customer" ? message.content : serviceDisplayText(message.content, true)}</p></div></div>
+              </div>)}
+              {pendingMessage && <div className="customer-message-row user assistant-pending-message"><div className="customer-message-avatar"><UserRound size={18} /></div><div><span>{user?.display_name} · 刚刚</span><div className="customer-bubble"><p>{pendingMessage}</p></div></div></div>}
+              {(sending || lastMessage?.role === "customer" && ticket?.stage !== "resolved") && <div className="customer-waiting-message"><LoaderCircle className="spin" size={18} /><p>{ticket?.handed_off ? "已收到您的消息，等待人工客服回复。" : "正在思考并为您回复…"}</p></div>}
+              {ticket?.customer_confirmed === true && <div className="assistant-conversation-ended"><CheckCircle2 size={16} />本次对话已结束，继续发送消息即可开始新对话。</div>}
+              <div ref={chatEnd} />
+            </>}
+          </div>
 
-            <div className="customer-chat-body">
-              {ticket.messages.map((message, index) => (
-                <div className={`customer-message-row ${message.role === "customer" ? "user" : "support"}`} key={message.id}>
-                  {message.role === "customer" ? <div className="customer-message-avatar"><UserRound size={17} /></div> : <div className="customer-message-avatar customer-support-avatar"><Image src="/customer-mascot-original.jpg" alt="在线客服" width={1192} height={1197} /></div>}
-                  <div><span>{message.role === "customer" ? ticket.customer_name : "在线客服"} · {timeLabel(message.created_at)}</span><div className="customer-bubble">{index === 0 && message.role === "customer" && <strong>{ticket.subject}</strong>}<p>{message.content}</p></div></div>
-                </div>
-              ))}
+          {lastMessage?.role === "support" && ticket?.customer_confirmed == null && !sending && <div className="assistant-feedback-toggle"><button type="button" disabled={busy} onClick={() => setFeedbackOpen(!feedbackOpen)}><Star size={14} />评价本次对话</button></div>}
+          {feedbackOpen && <section className="customer-feedback-box assistant-feedback">
+            <h2>这次回复解决您的问题了吗？</h2>
+            <div className="customer-rating"><span>服务评分</span>{[1, 2, 3, 4, 5].map(value => <button type="button" disabled={busy} aria-label={`${value} 星`} className={value <= rating ? "active" : ""} key={value} onClick={() => setRating(value)}><Star size={18} /></button>)}</div>
+            <textarea rows={2} maxLength={500} value={feedback} disabled={busy} onChange={event => setFeedback(event.target.value)} placeholder="补充您的意见（选填）" />
+            <div className="customer-feedback-actions"><button type="button" className="customer-secondary-action" disabled={busy} onClick={() => void confirmResult(false)}>仍需帮助</button><button type="button" className="customer-primary-action" disabled={busy} onClick={() => void confirmResult(true)}>问题已解决</button></div>
+          </section>}
 
-              {lastMessage?.role === "customer" && ticket.stage !== "resolved" && (
-                <div className="customer-waiting-message"><span><LoaderCircle className="spin" size={18} /></span><div><strong>{currentStage?.label}</strong><p>{currentStage?.description}，页面会自动更新。</p></div></div>
-              )}
-            </div>
-
-            {lastMessage?.role === "support" && ticket.customer_confirmed == null && (
-              <div className="customer-feedback-box">
-                <div><h2>这次回复解决您的问题了吗？</h2><p>您的反馈会同步回客服工作台。</p></div>
-                <div className="customer-rating"><span>服务评分</span>{[1, 2, 3, 4, 5].map((value) => <button type="button" aria-label={`${value} 星`} className={value <= rating ? "active" : ""} key={value} onClick={() => setRating(value)}><Star size={18} /></button>)}</div>
-                <textarea rows={3} maxLength={500} value={feedback} onChange={(event) => setFeedback(event.target.value)} placeholder="可以补充您的意见（选填）" />
-                {error && <div className="customer-error">{error}</div>}
-                <div className="customer-feedback-actions">
-                  <button type="button" className="customer-secondary-action" disabled={Boolean(confirming)} onClick={() => void confirmResult(false)}>{confirming === "follow_up" ? <LoaderCircle className="spin" size={17} /> : <MessageCircleMore size={17} />}仍需帮助</button>
-                  <button type="button" className="customer-primary-action" disabled={Boolean(confirming)} onClick={() => void confirmResult(true)}>{confirming === "resolved" ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}问题已解决</button>
-                </div>
-              </div>
-            )}
-
-            {ticket.customer_confirmed != null && (
-              <div className={`customer-result ${ticket.customer_confirmed ? "resolved" : "follow-up"}`}>
-                {ticket.customer_confirmed ? <CheckCircle2 size={24} /> : <MessageCircleMore size={24} />}
-                <div><strong>{ticket.customer_confirmed ? "本次咨询已完成" : "已通知客服继续处理"}</strong><p>{ticket.customer_confirmed ? "感谢您的反馈，祝您生活愉快。" : "客服处理后，新的回复会继续显示在这里。"}</p></div>
-              </div>
-            )}
-
-            {ticket.stage !== "resolved" && (
-              <form className="customer-chat-composer" onSubmit={sendFollowUp}>
-                <textarea rows={2} maxLength={4000} value={messageText} onChange={(event) => setMessageText(event.target.value)} placeholder="继续输入您想咨询的内容…" />
-                <button type="submit" aria-label="发送消息" disabled={sendingMessage || !messageText.trim()}>{sendingMessage ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}</button>
-                {error && <div className="customer-error">{error}</div>}
-              </form>
-            )}
-          </section>
-
-          <aside className="customer-progress-card">
-            <div className="customer-progress-heading"><span><Clock3 size={19} /></span><div><h2>处理进度</h2><p>{ticket.ticket_no}</p></div></div>
-            <div className="customer-progress-list">
-              {progressSteps.map((step, index) => {
-                const current = stageIndex(ticket.stage);
-                const done = index < current || ticket.stage === "resolved";
-                const active = index === current && ticket.stage !== "resolved";
-                return <div className={`${done ? "done" : ""} ${active ? "active" : ""}`} key={step}><span>{done ? <Check size={13} /> : active ? <LoaderCircle className="spin" size={13} /> : <Circle size={11} />}</span><div><strong>{step}</strong>{active && <small>{currentStage?.description}</small>}</div></div>;
-              })}
-            </div>
-            <div className="customer-progress-note"><Headphones size={16} /><p>此页面每 3 秒自动同步一次，无需手动刷新。</p></div>
-          </aside>
-        </main>
-      )}
+          <div className="assistant-composer-wrap">
+            {error && <div className="customer-error" role="alert">{error}</div>}
+            <form className="customer-chat-composer assistant-composer" onSubmit={submitMessage}>
+              <textarea ref={composerRef} aria-label="聊天消息" rows={2} maxLength={4000} disabled={busy} value={messageText} onChange={event => setMessageText(event.target.value)} onKeyDown={onComposerKeyDown} placeholder="咨询商品、价格、订单、物流或售后问题…" />
+              <button type="submit" aria-label="发送消息" disabled={busy || !messageText.trim()}>{sending ? <LoaderCircle className="spin" size={18} /> : <Send size={18} />}</button>
+            </form>
+            <small>Enter 发送 · Shift + Enter 换行</small>
+          </div>
+        </section>
+      </main>
     </div>
   );
 }

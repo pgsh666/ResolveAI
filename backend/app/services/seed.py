@@ -1,10 +1,15 @@
-from datetime import timedelta
-
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import Approval, KnowledgeDocument, Ticket, utc_now
+from app.models import Approval, KnowledgeDocument, Ticket
 from app.services.embeddings import EmbeddingService
+
+
+RISK_POLICY_CONTENT = (
+    "退款、退货及其他资金写操作均需转人工处理，不设自动退款金额豁免。"
+    "物流运输天数超过订单预计送达天数或用户明确要求人工时，转交人工客服并保留上下文与路由记录。"
+    "不因对话轮数增加而自动转人工；安全风险、依据不足及流程异常仍按原规则处理。"
+)
 
 
 KNOWLEDGE_BASE = [
@@ -18,7 +23,7 @@ KNOWLEDGE_BASE = [
         "title": "退款审批与风控规范",
         "source": "policy://risk/refund-approval",
         "category": "refund",
-        "content": "单笔退款金额不高于100元且无风险标记可自动执行。超过100元、命中近期退款风险或订单信息不一致时，必须进入人工审批并记录审批人。",
+        "content": RISK_POLICY_CONTENT,
     },
     {
         "title": "物流延误补偿标准",
@@ -137,17 +142,8 @@ KNOWLEDGE_BASE = [
 ]
 
 
-TICKET_SEEDS = [
-    ("TKT-1048", "林晓雨", "VIP", "退款一直没有到账", "上周退货成功了，但退款还没到账，今天能处理吗？", "urgent", "ORD-8821", 329.0),
-    ("TKT-1047", "周航", "standard", "快递三天没有更新", "物流信息停了三天，商品一直没收到，请帮我催一下。", "high", "ORD-7642", 128.0),
-    ("TKT-1046", "陈念", "standard", "订单被重复扣款", "我只买了一件商品，银行卡却扣了两次款。", "high", "ORD-6255", 199.0),
-    ("TKT-1045", "苏桐", "VIP", "商品尺寸不合适", "衣服尺寸偏小，想在七天内退货。", "medium", "ORD-5190", 459.0),
-    ("TKT-1044", "顾言", "standard", "无法登录会员账号", "重置密码后还是提示登录失败。", "medium", None, None),
-    ("TKT-1043", "赵可", "standard", "收到的杯子破损", "包裹刚打开就是碎的，想要补发。", "high", "ORD-4388", 89.0),
-]
-
-
 def seed_database(session: Session) -> None:
+    """Initialize shared knowledge only; never insert example business records."""
     embeddings = EmbeddingService()
     existing_sources = set(session.scalars(select(KnowledgeDocument.source)).all())
     for item in KNOWLEDGE_BASE:
@@ -158,30 +154,21 @@ def seed_database(session: Session) -> None:
                     embedding=embeddings.legacy_embed(f"{item['title']}\n{item['content']}"),
                 )
             )
+    # Upgrade only the original seeded rule; leave manually edited documents alone.
+    rule = session.scalar(select(KnowledgeDocument).where(KnowledgeDocument.source == "policy://risk/refund-approval"))
+    previous_seed_versions = {
+        "单笔退款金额不高于100元且无风险标记可自动执行。超过100元、命中近期退款风险或订单信息不一致时，必须进入人工审批并记录审批人。",
+        "退款、退货及其他资金写操作均需转人工处理，不设自动退款金额豁免。物流运输天数超过订单预计送达天数、同一会话超过五轮仍未解决或用户明确要求人工时，转交人工客服并保留上下文与路由记录。",
+    }
+    rule_upgraded = bool(rule and rule.content in previous_seed_versions)
+    if rule_upgraded:
+        rule.content = RISK_POLICY_CONTENT
+        rule.embedding = embeddings.legacy_embed(f"{rule.title}\n{RISK_POLICY_CONTENT}")
 
-    ticket_count = session.scalar(select(func.count(Ticket.id))) or 0
-    if ticket_count == 0:
-        now = utc_now()
-        for index, (number, name, tier, subject, message, priority, order_id, amount) in enumerate(
-            TICKET_SEEDS
-        ):
-            session.add(
-                Ticket(
-                    ticket_no=number,
-                    customer_name=name,
-                    customer_tier=tier,
-                    subject=subject,
-                    message=message,
-                    priority=priority,
-                    order_id=order_id,
-                    amount=amount,
-                    status="new" if index < 4 else "in_progress",
-                    channel=["chat", "email", "app"][index % 3],
-                    sla_minutes=15 if priority == "urgent" else (30 if priority == "high" else 60),
-                    created_at=now - timedelta(minutes=index * 23 + 8),
-                )
-            )
     session.commit()
+    if rule_upgraded:
+        from app.services.retrieval import invalidate_retrieval_cache
+        invalidate_retrieval_cache()
 
 
 def normalize_legacy_ticket_statuses(session: Session) -> None:

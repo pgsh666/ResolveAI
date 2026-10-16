@@ -1,6 +1,6 @@
 # Redis 异步任务与 SSE
 
-文档同步：2026-10-13。启动/账号/模型准备见[交付指南](DELIVERY.md)，测试范围见[指标汇总](RESULTS.md)。
+文档同步：2026-10-16。启动/账号/模型准备见[交付指南](DELIVERY.md)，当前范围见[指标汇总](RESULTS.md)。任务与运行报告不随公开副本发布。
 
 ## 适用范围
 
@@ -38,7 +38,7 @@ SSE 事件类型为 `progress`、`completed` 和 `failed`。每条 `data` 都是
 
 ## 身份与权限
 
-业务请求需有效登录Cookie，POST另需CSRF。分析任务由agent/admin创建，知识导入/离线评测仅admin；任务快照与SSE检查工作空间范围，客户不能读取后台任务。前端EventSource携带凭据，SSE先核验范围再释放数据库连接，不在整个流期间占用SQL连接。
+业务请求需有效登录Cookie，POST另需CSRF。分析任务仅由admin创建，知识导入/离线评测仅admin；任务快照与SSE检查工作空间范围，客户不能读取后台任务。前端EventSource携带凭据，SSE先核验范围再释放数据库连接，不在整个流期间占用SQL连接。
 
 ## 数据与隔离
 

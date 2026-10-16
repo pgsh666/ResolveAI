@@ -72,6 +72,12 @@ class RetrievalService:
         ) as span:
             try:
                 cached = self._cache_get(query, limit)
+                if cached:
+                    active_ids = set(self.session.scalars(select(KnowledgeDocument.id).where(
+                        KnowledgeDocument.id.in_([c.id for c in cached]), KnowledgeDocument.enabled.is_(True),
+                        knowledge_scope(self.workspace_id))).all())
+                    if len(active_ids) != len(cached):
+                        cached = None  # A different process may have disabled a document.
                 if cached is not None:
                     self.last_cache_hit = True
                     get_performance_registry().record_cache(True)
@@ -93,7 +99,7 @@ class RetrievalService:
                     rows = self.session.execute(
                         select(KnowledgeDocument, (1 - distance).label("score"))
                         .join(KnowledgeEmbedding, KnowledgeEmbedding.document_id == KnowledgeDocument.id)
-                        .where(KnowledgeEmbedding.profile == self.embeddings.profile, knowledge_scope(self.workspace_id))
+                        .where(KnowledgeEmbedding.profile == self.embeddings.profile, knowledge_scope(self.workspace_id), KnowledgeDocument.enabled.is_(True))
                         .order_by(distance).limit(limit)
                     ).all()
                     results = [self._citation(document, float(score)) for document, score in rows]
@@ -101,7 +107,7 @@ class RetrievalService:
                     distance = KnowledgeDocument.embedding.cosine_distance(query_embedding)
                     rows = self.session.execute(
                         select(KnowledgeDocument, (1 - distance).label("score"))
-                        .where(knowledge_scope(self.workspace_id))
+                        .where(knowledge_scope(self.workspace_id), KnowledgeDocument.enabled.is_(True))
                         .order_by(distance)
                         .limit(limit)
                     ).all()
@@ -113,12 +119,12 @@ class RetrievalService:
                         rows = self.session.execute(
                             select(KnowledgeDocument, KnowledgeEmbedding.embedding)
                             .join(KnowledgeEmbedding, KnowledgeEmbedding.document_id == KnowledgeDocument.id)
-                            .where(KnowledgeEmbedding.profile == self.embeddings.profile, knowledge_scope(self.workspace_id))
+                            .where(KnowledgeEmbedding.profile == self.embeddings.profile, knowledge_scope(self.workspace_id), KnowledgeDocument.enabled.is_(True))
                         ).all()
                         scored = [(document, self._cosine_similarity(query_embedding, vector))
                                   for document, vector in rows]
                     else:
-                        documents = self.session.scalars(select(KnowledgeDocument).where(knowledge_scope(self.workspace_id))).all()
+                        documents = self.session.scalars(select(KnowledgeDocument).where(knowledge_scope(self.workspace_id), KnowledgeDocument.enabled.is_(True))).all()
                         scored = [(document, self._cosine_similarity(query_embedding, document.embedding))
                                   for document in documents]
                     scored.sort(key=lambda row: row[1], reverse=True)

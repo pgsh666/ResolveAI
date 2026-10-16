@@ -2,6 +2,8 @@
 
 import re
 
+from app.services.reply_guard import has_funds_disclosure
+
 
 def requests_money_operation(ticket: dict) -> bool:
     latest = re.sub(r"(?:不|不要|无需|暂不)(?:再|再次)?(?:申请|办理|发起|执行)(?:新的|新|再次|再)?(?:退款|退货|退还|返还)", "", ticket.get("message", ""))
@@ -45,7 +47,7 @@ def check_draft_facts(ticket: dict, context: dict, policy: dict, resolution: dic
                        and operation.get("result", {}).get("order_id") == expected_order]
     execution_supported = all(
         action in {"退款", "退回"} and verified_refunds
-        and all(result.get("mode") != "simulated" or re.search(r"模拟|演示", draft)
+        and all(result.get("mode") != "simulated" or has_funds_disclosure(draft)
                 for result in verified_refunds)
         for _, action in execution_claims
     )

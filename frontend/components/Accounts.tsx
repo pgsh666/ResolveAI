@@ -1,35 +1,32 @@
 "use client";
-import { useEffect, useState, type FormEvent } from "react";
-import { api, type SessionUser } from "@/lib/api";
-import { useAuth, roleLabels } from "@/components/AuthProvider";
+import { useState, type FormEvent } from "react";
+import { api } from "@/lib/api";
+import { useAuth } from "@/components/AuthProvider";
 import { PageHeader } from "@/components/PageHeader";
 
 export function Accounts() {
-  const { user } = useAuth();
-  const [accounts, setAccounts] = useState<SessionUser[]>([]);
+  const { user, setUser } = useAuth();
+  const [name, setName] = useState(user?.display_name ?? "");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [form, setForm] = useState({ username: "", display_name: "", password: "", role: "agent" as SessionUser["role"] });
-  useEffect(() => { api.users().then(setAccounts).catch((e: Error) => setError(e.message)); }, []);
   async function save(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setError("");
-    try { await api.createUser(form); setForm({ ...form, username: "", display_name: "", password: "" }); setAccounts(await api.users()); }
-    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    event.preventDefault(); setBusy(true); setError(""); setNotice("");
+    try {
+      if (!user) return;
+      setUser(await api.updateUser(user.id, {display_name:name.trim()}));
+      setNotice("个人资料已保存。");
+    } catch (reason) { setError((reason as Error).message); } finally { setBusy(false); }
   }
-  async function update(id: string, values: { active?: boolean; role?: SessionUser["role"] }) {
-    setBusy(true); setError("");
-    try { await api.updateUser(id, values); setAccounts(await api.users()); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  return <div className="page-wrap"><PageHeader title="账号管理" description="客户仅能访问自己的会话；客服处理工单；审批人确认高风险操作。角色变更会注销原有登录。" />
-    {error && <p role="alert">{error}</p>}
-    <section className="panel feature-panel"><h2>创建账号</h2><form className="accounts-list" onSubmit={save}>
-      <label>用户名 <input required value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} /></label>
-      <label>显示名称 <input required value={form.display_name} onChange={e => setForm({ ...form, display_name: e.target.value })} /></label>
-      <label>初始密码 <input type="password" required minLength={12} maxLength={128} autoComplete="new-password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} /></label>
-      <label>角色 <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value as SessionUser["role"] })}>{Object.entries(roleLabels).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select></label>
-      <button className="primary-button" disabled={busy}>创建账号</button></form></section>
-    <section className="panel feature-panel accounts-list"><h2>当前工作空间账号</h2>{accounts.map(account => <div className="account-row" key={account.id}><span>{account.display_name}（{account.username}）</span>
-      <select aria-label={`${account.username}角色`} disabled={busy || account.id === user?.id} value={account.role} onChange={e => update(account.id, { role: e.target.value as SessionUser["role"] })}>{Object.entries(roleLabels).map(([role, label]) => <option key={role} value={role}>{label}</option>)}</select>
-      <span>{account.active ? "启用" : "停用"}</span><button disabled={busy || account.id === user?.id} onClick={() => update(account.id, { active: !account.active })}>{account.active ? "停用" : "启用"}</button></div>)}</section>
+  return <div className="page-wrap"><PageHeader title="我的账号" description="仅维护您自己的管理员账号，不提供客户或其他账号的管理操作。" />
+    {error && <p className="customer-error" role="alert">{error}</p>}
+    {notice && <p className="commerce-notice" role="status">{notice}</p>}
+    <section className="panel feature-panel own-account-panel"><h2>个人资料</h2><form onSubmit={save}>
+      <label>登录名<input value={user?.username ?? ""} readOnly /></label>
+      <label>角色<input value="管理员" readOnly /></label>
+      <label>显示名称<input required maxLength={100} value={name} onChange={event => setName(event.target.value)} /></label>
+      <p>登录名与角色固定。修改密码请使用左下角“修改密码”，不支持创建、停用或修改客户账号。</p>
+      <button type="submit" className="primary-button" disabled={busy || !name.trim()}>{busy ? "正在保存…" : "保存个人资料"}</button>
+    </form></section>
   </div>;
 }

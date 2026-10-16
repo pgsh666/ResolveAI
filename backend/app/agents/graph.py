@@ -14,6 +14,7 @@ from app.services.retrieval import RetrievalService
 from app.services.reply_validation import check_draft_facts, requests_money_operation
 from app.services.retrieval_query import build_retrieval_query
 from app.services.security import SecurityService, redact_conversation, redact_text
+from app.services.shop_assistant import catalog_details_reply, needs_order_context, promotion_faq_citation, promotion_information_reply, service_scope_reply, unavailable_catalog_plan_reply
 
 
 def _event(
@@ -168,9 +169,14 @@ def build_support_graph(
     async def customer_agent(state: SupportState) -> dict:
         started = perf_counter()
         ticket = state["ticket"]
-        context = await commerce.aget_customer_context(
-            ticket.get("order_id"), ticket["customer_name"]
-        )
+        from app.services.shop_assistant import shop_context
+        context = None
+        if isinstance(commerce, CommerceGateway):
+            # Retrieval runs on another graph branch; never share its Session concurrently.
+            with Session(bind=session.bind) as read_session:
+                context = shop_context(read_session, ticket, state.get("conversation", []))
+        if context is None:
+            context = await commerce.aget_customer_context(ticket.get("order_id"), ticket["customer_name"])
         failures = []
         if context.get("tool_fallback"):
             failures.append(
@@ -187,9 +193,13 @@ def build_support_graph(
             "audit": [
                 _event(
                     "客户上下文 Agent",
-                    "调用 MCP 业务工具",
-                    (f"已查询订单 {context['order_id']} 与客户等级"
-                     if context.get("context_available") is not False else "未提供订单号，业务工具未调用"),
+                    "查询商城与订单" if context.get("tool_source") == "shop_database" else "调用 MCP 业务工具",
+                    ("已识别优惠咨询；活动规则由知识库提供，实时领券与发券记录未接入"
+                     if context.get("assistant_route") == "promotions" else
+                     f"已查询在售商品，匹配 {len(context.get('catalog', []))} 款"
+                     if context.get("assistant_route") == "catalog" else
+                     f"已查询订单 {context['order_id']} 与客户等级"
+                     if context.get("context_available") is not False else "未提供订单号，无订单数据可核验"),
                     started,
                     event_status=(
                         "degraded" if context.get("tool_fallback") else "completed"
@@ -210,22 +220,27 @@ def build_support_graph(
         ticket_amount = state["ticket"].get("amount")
         amount = float(ticket_amount if ticket_amount is not None else (context.get("order_amount") or 0))
         risk_flags = context.get("risk_flags", [])
-        financial_action = category in {"refund", "payment"} or requests_money_operation(state["ticket"])
+        financial_action = requests_money_operation(state["ticket"])
         if state["ticket"].get("completed_operations") and not requests_money_operation(state["ticket"]):
             financial_action = False
         security_assessment = state.get("security", {})
+        from app.services.shop_assistant import handoff_reasons
+        reasons = handoff_reasons(state["ticket"], state.get("conversation", []), context)
         policy = {
             "max_refund": amount,
             "auto_approval_limit": 100.0,
             "risk_flags": risk_flags,
             "eligible": context.get("paid", False),
             "must_review": (
-                (financial_action and (amount > 100 or bool(risk_flags)))
+                bool(reasons)
+                or bool(state["ticket"].get("handoff_active"))
+                or (financial_action and (amount > 100 or bool(risk_flags)))
                 or bool(security_assessment.get("requires_human_review"))
             ),
             "security_reasons": security_assessment.get("reasons", []),
             "financial_action_requested": requests_money_operation(state["ticket"]),
             "context_available": context.get("context_available", True),
+            "handoff_reasons": reasons,
         }
         summary = "命中人工审批规则" if policy["must_review"] else "符合自动处理规则"
         return {
@@ -246,6 +261,7 @@ def build_support_graph(
         started = perf_counter()
         attempt = int(state.get("generation_attempt", 0)) + 1
         failures = []
+        response_citations = state.get("citations", [])
         security_assessment = state.get("security", {})
         if security_assessment.get("blocked"):
             resolution = {
@@ -271,7 +287,54 @@ def build_support_graph(
                 "errors": [],
                 "security_reasons": security_assessment.get("reasons", []),
             }
-        elif state["customer_context"].get("context_available") is False and state["ticket"].get("category") != "account":
+        elif state["customer_context"].get("assistant_route") == "service_scope":
+            resolution = service_scope_reply(state["ticket"], state["policy"]).model_dump()
+            model_metadata = {"provider": "service_scope_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
+        elif state["customer_context"].get("assistant_route") == "promotions":
+            with Session(bind=session.bind) as read_session:
+                faq = promotion_faq_citation(read_session, state["ticket"].get("workspace_id", "default"),
+                                             response_citations, state.get("rag_status", {}))
+            resolution = promotion_information_reply(state["policy"], faq).model_dump()
+            response_citations = [faq] if faq else []
+            model_metadata = {"provider": "promotion_faq_guard" if faq else "promotion_information_guard",
+                              "model": "deterministic-policy", "skipped": True, "fallback": False,
+                              "attempts": 0, "retry_count": 0, "errors": [],
+                              "knowledge_source_id": faq["id"] if faq else None,
+                              "knowledge_source": faq["source"] if faq else None}
+        elif (state["customer_context"].get("assistant_route") == "catalog"
+              and state["customer_context"].get("catalog_intent") == "availability_plan"
+              and not state["customer_context"].get("availability_plan_available")):
+            resolution = unavailable_catalog_plan_reply(state["customer_context"], state["policy"]).model_dump()
+            model_metadata = {"provider": "catalog_information_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
+        elif (state["customer_context"].get("assistant_route") == "catalog"
+              and state["customer_context"].get("catalog_intent") == "details"):
+            resolution = catalog_details_reply(state["customer_context"], state["policy"]).model_dump()
+            model_metadata = {"provider": "catalog_details_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
+        elif state["customer_context"].get("assistant_route") in {"catalog", "logistics"}:
+            ticket_context = {**state["ticket"], "conversation": state.get("conversation", []),
+                              "quality_feedback": state.get("quality_feedback")}
+            result = llm.resolve(ticket_context, state["customer_context"], state.get("citations", []), state["policy"])
+            model_metadata = llm.call_metadata["resolution"]
+            resolution = result.model_dump()
+            resolution["requires_approval"] = bool(state["policy"].get("must_review"))
+            if model_metadata.get("fallback"):
+                failures.append({"code": "MODEL_RESOLUTION_FALLBACK", "stage": "resolution",
+                                 "reason": model_metadata.get("failure_reason"), "retry_count": model_metadata.get("retry_count", 0)})
+        elif state["policy"].get("handoff_reasons"):
+            resolution = {"recommended_action": "转人工客服处理", "rationale": "；".join(state["policy"]["handoff_reasons"]),
+                          "draft_response": "您好，您的请求已记录，需要人工客服继续处理。本轮未执行退款或其他资金操作，您可以在此对话补充信息。",
+                          "requires_approval": True, "confidence": 1.0, "refund_amount": (
+                              (state["ticket"].get("amount") or state["customer_context"].get("order_amount"))
+                              if state["policy"].get("financial_action_requested") and state["customer_context"].get("paid")
+                              and 0 < (state["ticket"].get("amount") or state["customer_context"].get("order_amount") or 0) <= (state["customer_context"].get("order_amount") or 0) else None),
+                          "safe_refusal": True}
+            model_metadata = {"provider": "handoff_policy", "model": "not_called", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
+        elif (state["customer_context"].get("context_available") is False
+              and needs_order_context(state["ticket"])):
             resolution = {
                 "recommended_action": "补充订单信息后继续核验",
                 "rationale": "缺少订单编号，不能声称已核实订单、付款状态或金额。",
@@ -315,6 +378,7 @@ def build_support_graph(
         else:
             ticket_context = {
                 **state["ticket"],
+                "conversation": state.get("conversation", []),
                 "quality_feedback": state.get("quality_feedback"),
                 "generation_attempt": attempt,
             }
@@ -344,6 +408,7 @@ def build_support_graph(
                 )
         return {
             "resolution": resolution,
+            "citations": response_citations,
             "generation_attempt": attempt,
             "model_trace": [{"stage": "resolution", **model_metadata}],
             "failures": failures,
@@ -376,6 +441,7 @@ def build_support_graph(
         )
         checks = {
             "has_policy_citation": citations_valid
+            or state.get("customer_context", {}).get("assistant_route") in {"catalog", "logistics", "service_scope", "promotions"}
             or bool(resolution.get("safe_refusal") or resolution.get("needs_clarification")
                     or resolution.get("security_blocked")),
             "has_clear_action": bool(resolution.get("recommended_action")),
@@ -454,7 +520,8 @@ def build_support_graph(
 
     def approval_gate(state: SupportState) -> dict:
         started = perf_counter()
-        failures = state.get("failures", [])
+        failures = [f for f in state.get("failures", []) if not (
+            f.get("code") == "RAG_NO_RELIABLE_RESULT" and state.get("customer_context", {}).get("assistant_route") in {"catalog", "logistics", "service_scope", "promotions"})]
         failure_count = len(failures)
         pending = bool(
             state["resolution"].get("requires_approval")

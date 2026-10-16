@@ -16,7 +16,7 @@ from app.models import Account, KnowledgeAccess, KnowledgeDocument, LoginAttempt
 
 PASSWORDS = PasswordHash.recommended()
 DUMMY_HASH = PASSWORDS.hash(secrets.token_urlsafe(24))
-ROLES = {"customer", "agent", "reviewer", "admin"}
+ROLES = {"customer", "admin"}
 COOKIE_NAME = "resolveai_session"
 
 
@@ -60,11 +60,21 @@ def validate_password(value):
         raise HTTPException(422, "密码长度需为12～128个字符")
 
 
+def validate_registration_password(value):
+    """Customer signup accepts short passwords; staff/reset policy is unchanged."""
+    if not value or not value.strip():
+        raise HTTPException(422, "密码不能为空")
+    if len(value) > 128 or len(value.encode()) > 512:
+        raise HTTPException(422, "密码不能超过128个字符")
+
+
 def ensure_bootstrap_accounts(session):
     for item in get_settings().auth_bootstrap_users:
+        if item.get("role") in {"agent", "reviewer"}:
+            continue  # Preserve old private config, but never recreate retired roles.
         username = normalize_username(item.get("username", ""))
-        if item.get("role") not in {"admin", "agent", "reviewer"}:
-            raise ValueError("Bootstrap accounts must have a staff role")
+        if item.get("role") != "admin":
+            raise ValueError("Bootstrap accounts must have the admin role")
         validate_password(item.get("password", ""))
         existing = session.scalar(select(Account).where(Account.username == username))
         if existing and existing.role == "customer":
@@ -118,15 +128,18 @@ async def authorize_request(request: Request):
     with SessionLocal() as session:
         actor, record = authenticate(request, session)
         check_csrf(request, record)
-    if not suffix.startswith("/customer/") and actor.role == "customer":
+    customer_endpoint = suffix == "/customer" or suffix.startswith("/customer/")
+    if get_settings().auth_enabled and customer_endpoint and actor.role != "customer":
+        raise HTTPException(403, "客户端仅限客户账号访问，请使用客户账号登录")
+    if not customer_endpoint and actor.role == "customer":
         raise HTTPException(403, "客户账号不能访问客服后台")
     if request.method not in {"GET", "HEAD", "OPTIONS"} and not suffix.startswith("/customer/"):
         if suffix.endswith("/decision") or re.fullmatch(r"/tickets/[^/]+/tools/[^/]+/execute", suffix):
-            allowed = {"reviewer", "admin"}
+            allowed = {"admin"}
         elif suffix.startswith("/tasks/knowledge-import") or suffix.startswith("/tasks/evaluation"):
             allowed = {"admin"}
         else:
-            allowed = {"agent", "admin"}
+            allowed = {"admin"}
         if actor.role not in allowed:
             raise HTTPException(403, "当前账号没有此操作权限")
     if suffix in {"/performance/metrics", "/observability"} and actor.role != "admin":
@@ -166,6 +179,8 @@ def assert_ticket_access(ticket_id, session, *, customer_action=False):
     if access is None and actor.role != "customer" and actor.workspace_id == "default" and not customer_action:
         allowed = True
     if customer_action:
+        if actor.role != "customer":
+            raise HTTPException(403, "客户端仅限客户账号访问，请使用客户账号登录")
         allowed = bool(access and access.workspace_id == actor.workspace_id and access.owner_id == actor.id)
     if not allowed:
         raise HTTPException(404, "工单不存在")
@@ -188,7 +203,7 @@ def attach_task_access(task_id, session):
 def assert_task_access(task_id, session):
     if not get_settings().auth_enabled:
         return
-    actor = require_role("admin", "agent", "reviewer")
+    actor = require_role("admin")
     access = session.get(TaskAccess, task_id)
     if not access or access.workspace_id != actor.workspace_id:
         raise HTTPException(404, "后台任务不存在")

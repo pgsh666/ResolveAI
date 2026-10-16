@@ -67,6 +67,7 @@ export interface KnowledgeDocument {
   source: string;
   content: string;
   category: string;
+  enabled: boolean;
   created_at: string;
 }
 
@@ -96,6 +97,9 @@ export interface PerformanceMetrics {
     average_tokens_per_call: number;
     estimated_cost_usd: number | null;
     average_cost_per_call_usd: number | null;
+    complete_cost_calls: number;
+    recorded_average_cost_per_call_usd: number | null;
+    recorded_cost_scope: string;
     known_estimated_cost_usd: number;
     unknown_cost_calls: number;
     cost_complete: boolean;
@@ -158,8 +162,10 @@ export interface Approval {
 }
 
 export interface TicketSummary {
+  case_type: "consultation" | "after_sales";
   id: string;
   ticket_no: string;
+  legacy_ticket_no?: string | null;
   customer_name: string;
   customer_tier: string;
   channel: string;
@@ -215,6 +221,15 @@ export interface TicketDetail extends TicketSummary {
   audit_events: AuditEvent[];
   approval?: Approval | null;
   conversation: ConversationMessage[];
+  customer_feedbacks: CustomerFeedback[];
+}
+
+export interface CustomerFeedback {
+  id: string;
+  resolved: boolean | null;
+  rating: number | null;
+  feedback: string;
+  created_at: string | null;
 }
 
 export type CustomerTicketStage = "submitted" | "processing" | "reviewing" | "answered" | "resolved" | "follow_up";
@@ -227,8 +242,8 @@ export interface ConversationMessage {
 }
 
 export interface CustomerTicketCreateInput {
-  customer_name: string;
-  subject: string;
+  customer_name?: string;
+  subject?: string;
   message: string;
   order_id?: string | null;
   amount?: number | null;
@@ -247,6 +262,28 @@ export interface CustomerTicket {
   customer_rating?: number | null;
   customer_feedback?: string | null;
   messages: ConversationMessage[];
+  handed_off: boolean;
+  handoff_reasons: string[];
   created_at: string;
   updated_at: string;
+}
+
+export interface Product {
+  id: string; name: string; description: string; image: string; price: number;
+  stock: number; category: string; active: boolean; created_at: string;
+}
+export type ProductInput = Omit<Product, "id" | "created_at">;
+export interface StoreOrder {
+  id: string; order_no: string; customer_name: string; product_name: string; quantity: number;
+  unit_price: number; total: number; refunded: number; status: string; status_label: string;
+  address: string; expected_delivery_days: number; transit_days: number; overdue: boolean; created_at: string;
+  events: {id: string; status: string; description: string; created_at: string}[];
+  ledger: {id: string; kind: string; amount: number; mode: string; created_at: string}[];
+}
+export interface QuestionRoute {
+  id: string; ticket_id: string; ticket_no: string; message_id: string; question: string;
+  request_time: string; finished_at: string | null; outcome: string; route: string;
+  api_requests: number; model_requests: number; tool_requests: number; total_ms: number;
+  steps: {agent: string; action?: string; summary: string; duration_ms: number; status: string}[];
+  degraded: boolean; handed_off: boolean; handoff_reasons: string[]; error: string | null;
 }

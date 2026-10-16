@@ -126,7 +126,8 @@ def test_current_conversation_is_kept_as_short_term_memory():
         assert follow_up.status_code == 200
 
         superseded = client.get(f"/api/v1/tickets/{ticket_id}/checkpoint").json()
-        assert superseded["status"] == "superseded"
+        assert superseded["status"] == "completed"
+        assert superseded["thread_id"] != first_thread_id
 
         second_analysis = client.post(f"/api/v1/tickets/{ticket_id}/analyze")
         assert second_analysis.status_code == 200, second_analysis.text
@@ -137,9 +138,11 @@ def test_current_conversation_is_kept_as_short_term_memory():
         assert [item["role"] for item in second_checkpoint["conversation"]] == [
             "customer",
             "support",
+            "support",
             "customer",
+            "support",
         ]
-        assert second_checkpoint["state"]["conversation"][-1]["content"] == (
+        assert second_checkpoint["state"]["conversation"][-2]["content"] == (
             "上一轮说在核查，请问现在有结果了吗？"
         )
 
@@ -148,4 +151,4 @@ def test_current_conversation_is_kept_as_short_term_memory():
             select(WorkflowCheckpoint).where(WorkflowCheckpoint.ticket_id == ticket_id)
         )
         assert workflow is not None
-        assert len(workflow.conversation) == 3
+        assert len(workflow.conversation) == 5

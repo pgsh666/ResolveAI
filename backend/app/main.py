@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.api.routes import health as api_health
 from app.api.routes import router
 from app.api.auth_routes import router as auth_router
+from app.api.store_routes import router as store_router
 from app.core.config import get_settings
 from app.core.database import SessionLocal, get_db, init_db
 from app.core.observability import configure_tracing, shutdown_tracing
@@ -52,6 +53,7 @@ app.add_middleware(
 app.add_middleware(PerformanceMiddleware, settings=settings)
 app.include_router(router, prefix=settings.api_prefix)
 app.include_router(auth_router, prefix=settings.api_prefix)
+app.include_router(store_router, prefix=settings.api_prefix)
 
 
 @app.exception_handler(RequestValidationError)

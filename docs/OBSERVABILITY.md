@@ -1,6 +1,6 @@
 # ResolveAI OpenTelemetry 链路追踪
 
-文档同步：2026-10-13。当前接口权限、模型准备和复验入口见[交付指南](DELIVERY.md)。
+文档同步：2026-10-16。当前接口权限、模型准备和复验入口见[交付指南](DELIVERY.md)。公开副本不携带个人试用 Trace、逐条请求或用量记录。
 
 ResolveAI 使用 OpenTelemetry SDK 生成 Trace，通过 OTLP/HTTP 发送到本地 Jaeger。追踪失败不会阻断客服业务流程。
 

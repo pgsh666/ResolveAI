@@ -1,11 +1,12 @@
 import asyncio
 import json
 import re
+from typing import Literal
 from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, or_, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
@@ -21,6 +22,8 @@ from app.models import (
     Ticket,
     ToolExecution,
     WorkflowCheckpoint,
+    QuestionRoute,
+    KnowledgeAccess,
     new_id,
     utc_now,
 )
@@ -38,6 +41,8 @@ from app.schemas import (
     DraftSendRequest,
     KnowledgeDocumentOut,
     KnowledgeImportRequest,
+    KnowledgeImportItem,
+    KnowledgeToggle,
     HealthResponse,
     TicketCreate,
     TicketDetail,
@@ -54,6 +59,8 @@ from app.services.performance import build_performance_report
 from app.services.auth import (assert_ticket_access, assert_task_access, attach_ticket_access, attach_task_access,
                                authorize_request, current_actor, ticket_scope)
 from app.services.auth import knowledge_scope
+from app.services.numbering import next_number
+from app.services.question_routing import begin_question, answer_question
 from app.services.reply_validation import check_draft_facts
 from app.services.security import redact_conversation, redact_text
 from app.services.workflow import WorkflowService, ticket_conversation, ticket_to_detail
@@ -107,10 +114,11 @@ def _encode_sse(event: str, snapshot: dict) -> str:
 
 
 def get_ticket_or_404(ticket_id: str, session: Session) -> Ticket:
-    assert_ticket_access(ticket_id, session)
-    ticket = session.get(Ticket, ticket_id)
+    ticket = session.scalar(select(Ticket).where(or_(Ticket.id == ticket_id, Ticket.ticket_no == ticket_id,
+                                                    Ticket.legacy_ticket_no == ticket_id), ticket_scope()))
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
+    assert_ticket_access(ticket.id, session)
     return ticket
 
 
@@ -164,6 +172,8 @@ def ticket_to_customer_view(ticket: Ticket) -> CustomerTicketOut:
         customer_rating=confirmation.get("rating"),
         customer_feedback=confirmation.get("feedback"),
         messages=messages,
+        handed_off=assessment.get("handoff", {}).get("active", False),
+        handoff_reasons=assessment.get("handoff", {}).get("reasons", []),
         created_at=ticket.created_at,
         updated_at=ticket.updated_at,
     )
@@ -399,7 +409,7 @@ def dashboard(session: Session = Depends(get_db)) -> DashboardResponse:
     ]
     return DashboardResponse(
         metrics=[
-            {"label": "工单总量", "value": str(total), "change": "数据库实时统计", "tone": "neutral"},
+            {"label": "对话总量", "value": str(total), "change": "数据库实时统计", "tone": "neutral"},
             {"label": "当前解决率", "value": f"{resolution_rate}%", "change": f"{resolved}/{total} 张已解决", "tone": "positive" if resolved else "neutral"},
             {"label": "Agent 平均耗时", "value": duration_label, "change": "基于审计记录", "tone": "neutral"},
             {"label": "待人工审批", "value": str(pending), "change": "高风险动作", "tone": "warning" if pending else "neutral"},
@@ -414,6 +424,8 @@ def dashboard(session: Session = Depends(get_db)) -> DashboardResponse:
 @router.get("/tickets", response_model=list[TicketSummary], tags=["tickets"])
 def list_tickets(
     ticket_status: str | None = Query(default=None, alias="status"),
+    q: str = Query(default="", max_length=100),
+    case_type: Literal["all", "consultation", "after_sales"] = "all",
     session: Session = Depends(get_db),
 ) -> list[Ticket]:
     statement = select(Ticket).where(ticket_scope()).order_by(Ticket.created_at.desc())
@@ -423,18 +435,20 @@ def list_tickets(
         )
     elif ticket_status and ticket_status != "all":
         statement = statement.where(Ticket.status == ticket_status)
-    return list(session.scalars(statement).all())
+    if q:
+        statement = statement.where(or_(Ticket.ticket_no.contains(q, autoescape=True), Ticket.legacy_ticket_no.contains(q, autoescape=True), Ticket.subject.contains(q, autoescape=True), Ticket.customer_name.contains(q, autoescape=True)))
+    tickets = list(session.scalars(statement).all())
+    return tickets if case_type == "all" else [ticket for ticket in tickets if ticket.case_type == case_type]
 
 
 @router.post(
     "/tickets", response_model=TicketDetail, status_code=status.HTTP_201_CREATED, tags=["tickets"]
 )
 def create_ticket(payload: TicketCreate, session: Session = Depends(get_db)) -> TicketDetail:
-    count = session.scalar(select(func.count(Ticket.id))) or 0
     ticket_data = payload.model_dump()
     for field in ("customer_name", "subject", "message"):
         ticket_data[field] = redact_text(ticket_data[field])
-    ticket = Ticket(ticket_no=f"TKT-{1050 + count}", **ticket_data)
+    ticket = Ticket(ticket_no=next_number(session), **ticket_data)
     session.add(ticket)
     attach_ticket_access(ticket, session)
     session.commit()
@@ -448,23 +462,33 @@ def create_ticket(payload: TicketCreate, session: Session = Depends(get_db)) -> 
     status_code=status.HTTP_201_CREATED,
     tags=["customer"],
 )
-def create_customer_ticket(
+async def create_customer_ticket(
     payload: CustomerTicketCreate,
     session: Session = Depends(get_db),
 ) -> CustomerTicketOut:
-    count = session.scalar(select(func.count(Ticket.id))) or 0
     created_at = utc_now()
     initial_message = redact_text(payload.message.strip())
+    if not initial_message:
+        raise HTTPException(status_code=422, detail="消息内容不能为空")
+    from app.services.reply_validation import extract_order_identifier, requests_money_operation
+    customer_name = current_actor().display_name if get_settings().auth_enabled else (payload.customer_name or "客户")
+    subject = redact_text((payload.subject or initial_message[:60]).strip())
+    order_id = payload.order_id.strip() if payload.order_id else extract_order_identifier(initial_message)
+    amount = payload.amount
+    if amount is None and requests_money_operation({"subject": subject, "message": initial_message}):
+        requested = re.search(r"(?:退款|退还|返还|退回|退给我)\s*(?:金额为|金额是|金额)?\s*(\d+(?:\.\d{1,2})?)\s*元", initial_message)
+        if requested and float(requested.group(1)) <= 10000:
+            amount = float(requested.group(1))
     ticket = Ticket(
-        ticket_no=f"TKT-{1050 + count}",
-        customer_name=redact_text(payload.customer_name.strip()),
+        ticket_no=next_number(session),
+        customer_name=redact_text(customer_name.strip()),
         customer_tier="standard",
         channel="web",
-        subject=redact_text(payload.subject.strip()),
+        subject=subject,
         message=initial_message,
         priority="medium",
-        order_id=payload.order_id.strip() if payload.order_id else None,
-        amount=payload.amount,
+        order_id=order_id,
+        amount=amount,
         assessment={
             "conversation": [
                 {
@@ -482,6 +506,8 @@ def create_customer_ticket(
     attach_ticket_access(ticket, session)
     session.commit()
     session.refresh(ticket)
+    row = begin_question(session, ticket)
+    await answer_question(session, ticket, row)
     return ticket_to_customer_view(ticket)
 
 
@@ -503,7 +529,7 @@ def get_customer_ticket(
     response_model=CustomerTicketOut,
     tags=["customer"],
 )
-def send_customer_message(
+async def send_customer_message(
     ticket_id: str,
     payload: CustomerMessageRequest,
     session: Session = Depends(get_db),
@@ -514,11 +540,20 @@ def send_customer_message(
     confirmation = assessment.get("customer_confirmation") or {}
     if confirmation.get("resolved"):
         raise HTTPException(status_code=409, detail="该咨询已经完成，请发起新的咨询")
+    if session.scalar(select(QuestionRoute).where(QuestionRoute.ticket_id == ticket.id, QuestionRoute.outcome == "processing")):
+        raise HTTPException(409, detail="上一轮问题正在处理，请稍后再发送")
 
     content = redact_text(payload.message.strip())
     if not content:
         raise HTTPException(status_code=422, detail="消息内容不能为空")
     sent_at = utc_now()
+    # Claim this conversation version before writing its JSON history. Concurrent
+    # requests must not overwrite one another or launch two checkpoints for one turn.
+    claimed = session.execute(update(Ticket).where(Ticket.id == ticket.id, Ticket.updated_at == ticket.updated_at)
+                              .values(updated_at=sent_at))
+    if claimed.rowcount != 1:
+        session.rollback()
+        raise HTTPException(409, detail="会话刚刚发生变化，请刷新后重新发送")
     messages = ticket_conversation(ticket)
     messages.append(
         {
@@ -534,27 +569,34 @@ def send_customer_message(
     ticket.message = content
     from app.services.reply_validation import extract_order_identifier, requests_money_operation
 
-    if not ticket.order_id:
-        ticket.order_id = extract_order_identifier(content)
+    supplied_order = extract_order_identifier(content)
+    if supplied_order:
+        ticket.order_id = supplied_order
     if requests_money_operation({"subject": ticket.subject, "message": content}):
         requested_amount = re.search(r"(?:退款|退还|返还|退回|退给我)\s*(?:多扣的|金额为|金额是|金额)?\s*(\d+(?:\.\d{1,2})?)\s*元", content)
         if requested_amount and float(requested_amount.group(1)) <= 10000:
             ticket.amount = float(requested_amount.group(1))
     ticket.status = "in_progress"
     ticket.draft_response = None
-    ticket.requires_approval = False
+    handed_off = assessment.get("handoff", {}).get("active", False)
+    if not handed_off:
+        ticket.requires_approval = False
     checkpoint = session.scalar(
         select(WorkflowCheckpoint).where(WorkflowCheckpoint.ticket_id == ticket.id)
     )
-    if checkpoint and checkpoint.status != "superseded":
+    if checkpoint and checkpoint.status != "superseded" and not handed_off:
         checkpoint.status = "superseded"
         checkpoint.next_node = None
         checkpoint.updated_at = sent_at
     approval = session.scalar(select(Approval).where(Approval.ticket_id == ticket.id))
-    if approval and approval.state == "pending":
+    if approval and approval.state in {"pending", "approved"}:
         approval.state = "cancelled"
         approval.reviewer_note = "客户补充了新信息，原审批已失效"
         approval.reviewed_at = sent_at
+        ticket.requires_approval = False
+        if checkpoint:
+            checkpoint.status = "superseded"
+            checkpoint.next_node = None
     session.add(
         AuditEvent(
             ticket_id=ticket.id,
@@ -564,8 +606,9 @@ def send_customer_message(
             details={"message": content, "round": len(messages)},
         )
     )
-    session.commit()
+    row = begin_question(session, ticket)
     session.refresh(ticket)
+    await answer_question(session, ticket, row)
     return ticket_to_customer_view(ticket)
 
 
@@ -594,8 +637,15 @@ def confirm_customer_ticket(
         "feedback": feedback,
         "confirmed_at": confirmed_at.isoformat(),
     }
+    if not payload.resolved:
+        history = list(assessment.get("customer_feedback_history", []))
+        history.append({"feedback": feedback or "客户反馈问题仍未解决", "created_at": confirmed_at.isoformat()})
+        assessment["customer_feedback_history"] = history
     ticket.assessment = assessment
     ticket.status = "resolved" if payload.resolved else "needs_review"
+    if payload.resolved:
+        assessment["handoff"] = {"active": False, "reasons": []}
+        ticket.assessment = assessment
     if payload.resolved and not ticket.resolution:
         ticket.resolution = "客户确认问题已解决"
     session.add(
@@ -957,6 +1007,14 @@ def send_ticket_response(
                      "actor": current_actor().username},
         )
     )
+    pending_routes = session.scalars(select(QuestionRoute).where(
+        QuestionRoute.ticket_id == ticket.id,
+        QuestionRoute.outcome.in_(["handed_off", "waiting_human", "failed_to_human", "processing"]))).all()
+    for route_record in pending_routes:
+        route_record.outcome = "human_replied"
+        route_record.finished_at = sent_at
+        route_record.steps = list(route_record.steps or []) + [{"agent": "人工客服", "action": "发送客户回复",
+            "summary": "客服已回复；人工等待时间不计入自动处理耗时", "duration_ms": 0, "status": "completed"}]
     session.commit()
     session.refresh(ticket)
     return ticket_to_detail(session, ticket)
@@ -998,6 +1056,54 @@ def get_knowledge_document(
     if not document:
         raise HTTPException(status_code=404, detail="知识文档不存在")
     return document
+
+
+@router.post("/knowledge/documents", response_model=KnowledgeDocumentOut, status_code=201, tags=["knowledge"])
+def add_faq(payload: KnowledgeImportItem, session: Session = Depends(get_db)):
+    from app.services.auth import require_role
+    from app.services.retrieval import invalidate_retrieval_cache
+    actor = require_role("admin")
+    embeddings = EmbeddingService()
+    document = KnowledgeDocument(**payload.model_dump(), embedding=embeddings.legacy_embed(f"{payload.title}\n{payload.content}"))
+    session.add(document)
+    session.flush()
+    session.add(KnowledgeAccess(document_id=document.id, workspace_id=actor.workspace_id))
+    session.commit()
+    invalidate_retrieval_cache()
+    return document
+
+
+@router.patch("/knowledge/documents/{document_id}", response_model=KnowledgeDocumentOut, tags=["knowledge"])
+def toggle_knowledge(document_id: str, payload: KnowledgeToggle, session: Session = Depends(get_db)):
+    from app.services.auth import require_role
+    from app.services.retrieval import invalidate_retrieval_cache
+    actor = require_role("admin")
+    document = get_knowledge_document(document_id, session)
+    access = session.get(KnowledgeAccess, document_id)
+    if access is None and actor.workspace_id != "default":
+        raise HTTPException(403, "公共文档只允许默认工作空间维护")
+    document.enabled = payload.enabled
+    session.commit()
+    invalidate_retrieval_cache()
+    return document
+
+
+@router.get("/questions/routes", tags=["questions"])
+def question_routes(q: str = Query(default="", max_length=100), limit: int = Query(default=100, ge=1, le=500),
+                    offset: int = Query(default=0, ge=0), session: Session = Depends(get_db)):
+    stmt = select(QuestionRoute, Ticket.ticket_no).join(Ticket, Ticket.id == QuestionRoute.ticket_id).where(ticket_scope())
+    if q:
+        stmt = stmt.where(or_(QuestionRoute.question.contains(q, autoescape=True), Ticket.ticket_no.contains(q, autoescape=True), Ticket.legacy_ticket_no.contains(q, autoescape=True)))
+    return [{**{c.name: getattr(row, c.name) for c in QuestionRoute.__table__.columns}, "ticket_no": number}
+            for row, number in session.execute(stmt.order_by(QuestionRoute.request_time.desc()).offset(offset).limit(limit)).all()]
+
+
+@router.get("/customer/tickets", response_model=list[CustomerTicketOut], tags=["customer"])
+def customer_ticket_history(session: Session = Depends(get_db)):
+    from app.models import TicketAccess
+    actor = current_actor()
+    stmt = select(Ticket).join(TicketAccess, TicketAccess.ticket_id == Ticket.id).where(TicketAccess.owner_id == actor.id, TicketAccess.workspace_id == actor.workspace_id)
+    return [ticket_to_customer_view(t) for t in session.scalars(stmt.order_by(Ticket.created_at.desc())).all()]
 
 
 @router.get("/agents/topology", tags=["agents"])

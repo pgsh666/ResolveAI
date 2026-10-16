@@ -134,8 +134,8 @@ def test_quality_failure_regenerates_once_then_passes(monkeypatch):
             "/api/v1/tickets",
             json={
                 "customer_name": "质检重生成用户",
-                "subject": "退款到账进度",
-                "message": "退款还没有到账，请帮我查一下。",
+                "subject": "商品使用说明",
+                "message": "请根据商品说明提供使用建议。",
                 "order_id": "ORD-QUALITY-01",
                 "amount": 20,
             },

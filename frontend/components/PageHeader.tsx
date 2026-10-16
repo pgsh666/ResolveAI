@@ -54,7 +54,7 @@ export function PageHeader({ title, description }: { title: string; description:
       ? "DeepSeek"
       : health.agent_mode === "openai"
         ? "OpenAI"
-        : "演示模式";
+        : "离线规则";
 
   const pendingTickets = useMemo(
     () => tickets.filter((ticket) => ticket.status === "pending_approval"),
@@ -64,7 +64,7 @@ export function PageHeader({ title, description }: { title: string; description:
     const keyword = query.trim().toLowerCase();
     if (!keyword) return tickets.slice(0, 5);
     return tickets.filter((ticket) => (
-      `${ticket.ticket_no} ${ticket.customer_name} ${ticket.subject} ${ticket.order_id ?? ""}`
+      `${ticket.ticket_no} ${ticket.legacy_ticket_no ?? ""} ${ticket.customer_name} ${ticket.subject} ${ticket.order_id ?? ""}`
         .toLowerCase()
         .includes(keyword)
     )).slice(0, 6);

@@ -11,9 +11,7 @@ function New-PrivateSecret {
     return [Convert]::ToBase64String($buffer).TrimEnd('=').Replace('+','-').Replace('/','_')
 }
 $accounts = @(
-    @{username='admin'; display_name='管理员'; role='admin'; password=(New-PrivateSecret)},
-    @{username='agent'; display_name='客服坐席'; role='agent'; password=(New-PrivateSecret)},
-    @{username='reviewer'; display_name='审批人'; role='reviewer'; password=(New-PrivateSecret)}
+    @{username='admin'; display_name='管理员'; role='admin'; password=(New-PrivateSecret)}
 )
 $accountJson = ConvertTo-Json -InputObject $accounts -Compress
 $content = "# PRIVATE: local initial credentials; never upload or paste this file.`nAUTH_BOOTSTRAP_USERS='$accountJson'`nTOOL_APPROVAL_SECRET=$(New-PrivateSecret)`n"
@@ -25,4 +23,4 @@ if ($env:OS -eq 'Windows_NT') {
     & icacls.exe $target /inheritance:r /grant:r "*${taskSid}:(F)" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Could not restrict the private credentials file ACL." }
 }
-Write-Host "Created private credentials in .env.auth (admin / agent / reviewer). Open that local file to see passwords; do not share it."
+Write-Host "Created private administrator credentials in .env.auth. Open that local file to see the password; do not share it."

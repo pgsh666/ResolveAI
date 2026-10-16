@@ -87,20 +87,21 @@ def test_missing_order_workflow_asks_for_information():
         assert detail["assessment"]["customer_context"]["context_available"] is False
 
 
-def test_approval_after_old_reply_keeps_new_round_draft():
+def test_approval_after_old_reply_keeps_new_round_draft(paid_order):
     with TestClient(app) as client:
+        order = paid_order(client)
         ticket = client.post("/api/v1/customer/tickets", json={
             "customer_name": "多轮审批验收", "subject": "退款与售后", "message": "商品有质量问题，想申请退款。",
         }).json()
         ticket_id = ticket["id"]
         first = client.post(f"/api/v1/tickets/{ticket_id}/analyze").json()
-        assert client.post(f"/api/v1/tickets/{ticket_id}/draft/send", json={"response": first["draft_response"]}).status_code == 200
-        followup = client.post(f"/api/v1/customer/tickets/{ticket_id}/messages", json={"message": "订单号是ORD-CLOSE-222，我申请退款180元。"})
+        assert first["draft_response"] is None  # Handoff acknowledgement was automatically sent.
+        followup = client.post(f"/api/v1/customer/tickets/{ticket_id}/messages", json={"message": f"订单号是{order['order_no']}，我申请退款180元。"})
         assert followup.status_code == 200
         pending = client.post(f"/api/v1/tickets/{ticket_id}/analyze").json()
         assert pending["status"] == "pending_approval"
         assert "退款" in pending["approval"]["action"] and "180" in pending["approval"]["action"]
-        assert pending["order_id"] == "ORD-CLOSE-222" and pending["amount"] == 180
+        assert pending["order_id"] == order["order_no"] and pending["amount"] == 180
         approved = client.post(f"/api/v1/tickets/{ticket_id}/decision", json={"decision": "approve", "reviewer": "验收审核员", "note": "批准"})
         assert approved.status_code == 200
         assert approved.json()["draft_response"]
@@ -108,7 +109,7 @@ def test_approval_after_old_reply_keeps_new_round_draft():
 
 
 @pytest.mark.parametrize("amount,authorized", [(180, True), (1000, False)])
-def test_explicit_valid_request_fills_missing_approval_amount_not_model_guess(monkeypatch, amount, authorized):
+def test_explicit_valid_request_fills_missing_approval_amount_not_model_guess(monkeypatch, amount, authorized, paid_order):
     def resolve_without_amount(self, ticket, customer_context, citations, policy):
         self.call_metadata["resolution"] = {"provider": "demo", "fallback": False}
         return ResolutionResult(recommended_action="人工审批", rationale="需人工审核客户的退款申请。",
@@ -116,15 +117,16 @@ def test_explicit_valid_request_fills_missing_approval_amount_not_model_guess(mo
                                 refund_amount=None, requires_approval=True, confidence=0.9)
     monkeypatch.setattr(LLMService, "resolve", resolve_without_amount)
     with TestClient(app) as client:
+        order = paid_order(client)
         ticket = client.post("/api/v1/customer/tickets", json={
             "customer_name": "金额范围验收", "subject": "退款与售后", "message": f"我申请退款{amount}元。",
-            "order_id": "ORD-CLOSE-222", "amount": amount,
+            "order_id": order["order_no"], "amount": amount,
         }).json()
         response = client.post(f"/api/v1/tickets/{ticket['id']}/analyze")
         assert response.status_code == 200, response.text
         pending = response.json()
         assert pending["status"] == "pending_approval"
-        assert pending["assessment"]["refund_amount"] is None
+        assert pending["assessment"]["refund_amount"] == (amount if authorized else None)
         assert pending["approval"]["amount"] == (amount if authorized else None)
 
 

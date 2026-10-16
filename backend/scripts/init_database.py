@@ -1,4 +1,4 @@
-"""Create the schema, enable pgvector when needed, and seed demo data."""
+"""Create the schema and shared knowledge, without example business records."""
 
 from sqlalchemy import func, select
 

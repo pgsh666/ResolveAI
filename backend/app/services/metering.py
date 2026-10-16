@@ -36,6 +36,7 @@ def meter_workflow(operation):
                               queue_ms=max(0.0, (started_at - submitted_at).total_seconds() * 1000))
             self.session.add(row)
             self.session.commit()
+            self.last_run_id = row.id
             token = CURRENT_RUN.set(row.id)
             timer = perf_counter()
             try:

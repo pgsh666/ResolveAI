@@ -8,13 +8,13 @@ export function AppFrame({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   if (pathname === "/login") return <>{children}</>;
 
-  if (pathname.startsWith("/customer")) {
+  if (pathname === "/customer" || pathname.startsWith("/customer/")) {
     return <main className="customer-shell">{children}</main>;
   }
 
   return (
-    <div className="app-shell">
-      <Suspense fallback={<div className="topbar" aria-hidden="true" />}><Sidebar /></Suspense>
+    <div className="app-shell merchant-shell">
+      <Suspense fallback={<div className="admin-sidebar-panel" aria-hidden="true" />}><Sidebar /></Suspense>
       <main className="main-shell">{children}</main>
     </div>
   );

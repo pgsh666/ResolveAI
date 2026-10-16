@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 export const metadata: Metadata = {
-  title: "在线客服 · ResolveAI",
-  description: "提交服务问题、查看处理进度并接收客服回复",
+  title: "电商智能客服 · ResolveAI",
+  description: "直接咨询商品选购、价格库存、订单支付、物流配送及售后问题",
 };
 
 export default function CustomerLayout({ children }: { children: ReactNode }) {

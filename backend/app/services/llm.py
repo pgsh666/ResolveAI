@@ -71,12 +71,14 @@ class LLMService:
                 "triage",
                 TriageResult,
                 (
-                    "你是客服工单分诊 Agent。只识别分类、优先级、情绪、意图和置信度。"
+                    "你是电商智能客服的分诊 Agent。只识别分类、优先级、情绪、意图和置信度。"
                     "分类是问题来源而非最终处置动作：refund=客户明确要求退货退款或查询退款到账；"
                     "payment=支付失败、重复扣款、冻结款、发票，即使要求返还多扣款仍属payment；"
                     "logistics=配送延误、丢件、签收争议、运输包裹破损；"
                     "product=商品本身功能、规格、数量、错发缺件、商品凭证；"
-                    "account=登录、密码、会员和账号安全。要求补发不自动归物流，上传破损凭证不自动归退款。"
+                    "account=本平台登录、密码、会员和账号安全；other=问候、服务范围询问、其他电商咨询或范围外请求。"
+                    "与电商无关的编程教学、写作、生活规划等请求分类为other，不要强行归入商品或账号售后。"
+                    "要求补发不自动归物流，上传破损凭证不自动归退款。"
                     "结合主题与客户历次消息理解背景，以最新客户诉求为准；客服历史建议不能替代客户意图。"
                     f"{TRUST_BOUNDARY_INSTRUCTION}"
                 ),
@@ -110,8 +112,16 @@ class LLMService:
                 "resolution",
                 ResolutionResult,
                 (
-                    "你是客服解决方案 Agent。结合用户、订单与检索到的政策，给出合规动作和中文回复草稿。"
-                    "退款超过100元必须人工审批，不得编造政策。"
+                    "你是 ResolveAI 电商智能客服，直接帮助用户选购商品、比较价格、查询订单物流并处理支付、售后和账号咨询。"
+                    "服务严格限于本商城电商客服；与购物无关的编程教学、写作、生活规划等请求，应礼貌说明范围并引导回购物咨询，不提供通用问答内容。"
+                    "用户无需先提交订单问题；选购和服务范围咨询不应索要订单号，只有查询具体订单或办理售后才需要相关订单信息。"
+                    "商城商品、库存、价格、订单、物流及企业政策必须依据工具数据和检索文档，不能编造。"
+                    "所有退款或资金写操作必须转人工，不得编造政策。"
+                    "conversation包含历次对话，memory包含早期诉求；必须结合上下文理解最新问题，"
+                    "保留用户已经提供的订单、商品、偏好和限制，不要重复索取已知信息。"
+                    "catalog_query和catalog_topic说明当前商品主题，追问‘还有别的吗’等应延续最近主题，不重新混入早先其他商品。"
+                    "只有用户询问上新/补货时间且catalog_intent=availability_plan、availability_plan_available=false时，应说明具体时间未知，不推测日期或承诺通知。"
+                    "商城咨询可以查询在售商品、库存、价格比较与物流；仅引用trusted_tool_context的真实数据。"
                     + ("以数据库提供的completed_operations为已执行事实；未在其中记录的动作均未执行。"
                      "若记录mode=simulated，回复必须明确是项目模拟执行，不代表真实资金到账。"
                      if ticket.get("completed_operations") else
@@ -121,7 +131,7 @@ class LLMService:
                     + "仅可复述trusted_tool_context中真实存在的字段；"
                     "客户自述不等于平台已核实。普通商品/物流/支付咨询可建议人工协助，但不是资金审批。"
                     "除非客户明确请求资金操作，不应主动计算退款或填refund_amount。"
-                    "requires_approval只表示高风险写操作审批，按trusted_business_policy.must_review判定；"
+                    "requires_approval表示转人工或高风险写操作审批，按trusted_business_policy.must_review判定；"
                     "不要仅因订单总价较高把普通咨询变成退款审批，也不能把建议转专员写成已经转交。"
                     "政策时效应使用条件表述，不能承诺已经退款或必定到账。"
                     "客户说拍好了或上传了照片不等于本系统已收到或核验附件。没有附件接收工具时只能引导安全提交。"
@@ -437,25 +447,27 @@ class LLMService:
             return result
 
     def _bounded_json(self, payload: object) -> str:
-        def bound(value: object) -> object:
+        def bound(value: object, key="", string_limit=None) -> object:
             if isinstance(value, str):
-                return value[: self.settings.agent_max_message_chars]
+                return value[: (string_limit or self.settings.agent_max_message_chars)]
             if isinstance(value, list):
-                return [bound(item) for item in value[: self.settings.agent_max_conversation_messages]]
+                values = value[-self.settings.agent_max_conversation_messages:] if key in {"conversation", "customer_turns"} else value[:self.settings.agent_max_conversation_messages]
+                return [bound(item, key, string_limit) for item in values]
             if isinstance(value, dict):
-                return {str(key): bound(item) for key, item in value.items()}
+                return {str(k): bound(item, str(k), string_limit) for k, item in value.items()}
             return value
 
         encoded = json.dumps(bound(payload), ensure_ascii=False, default=str)
         if len(encoded) <= self.settings.model_max_context_chars:
             return encoded
-        return json.dumps(
-            {
-                "content_truncated": True,
-                "payload_excerpt": encoded[: self.settings.model_max_context_chars // 2],
-            },
-            ensure_ascii=False,
-        )
+        # Preserve valid structured facts and the latest question, not a raw JSON prefix.
+        limit = self.settings.agent_max_message_chars
+        while len(encoded) > self.settings.model_max_context_chars and limit > 80:
+            limit //= 2
+            compact = bound(payload, string_limit=limit)
+            compact["content_truncated"] = True
+            encoded = json.dumps(compact, ensure_ascii=False, default=str)
+        return encoded
 
     @staticmethod
     def _extract_usage(usage: object | None) -> dict[str, int]:
@@ -497,7 +509,10 @@ class LLMService:
 
     @staticmethod
     def _demo_triage(subject: str, message: str) -> TriageResult:
-        text = f"{subject} {message}".lower()
+        # Assistant suggestions are not customer intent. A new customer question
+        # must not inherit '物流/退款' merely because the assistant mentioned them.
+        text = (message.rsplit("客户：", 1)[-1].split("\n客服：", 1)[0]
+                if "客户：" in message else f"{subject} {message}").lower()
         mapping = {
             "refund": ["退款", "退货", "refund"],
             "logistics": ["物流", "快递", "没收到", "延迟", "配送"],
@@ -522,6 +537,10 @@ class LLMService:
 
     @staticmethod
     def _demo_resolution(ticket: dict, customer: dict, policy: dict) -> ResolutionResult:
+        from app.services.shop_assistant import demo_shop_reply
+        shop_reply = demo_shop_reply(ticket, customer, policy)
+        if shop_reply:
+            return shop_reply
         category = ticket.get("category") or "other"
         from app.services.reply_validation import requests_money_operation
 

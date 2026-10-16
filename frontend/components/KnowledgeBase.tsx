@@ -34,6 +34,23 @@ export function KnowledgeBase() {
   const [importTask, setImportTask] = useState<BackgroundTask | null>(null);
   const [importNotice, setImportNotice] = useState("");
   const importInput = useRef<HTMLInputElement>(null);
+  const [faqOpen, setFaqOpen] = useState(false);
+  const [faqBusy, setFaqBusy] = useState(false);
+  const [faq, setFaq] = useState({title: "", content: "", category: "general"});
+  const canEdit = user?.role === "admin";
+
+  async function saveFaq(event: FormEvent) {
+    event.preventDefault(); setFaqBusy(true); setError("");
+    try {await api.addFaq({...faq, source: `faq://manual/${crypto.randomUUID()}`}); await reloadKnowledge(); setFaqOpen(false); setFaq({title:"", content:"", category:"general"});}
+    catch (reason) {setError((reason as Error).message);} finally {setFaqBusy(false);}
+  }
+
+  async function toggleDocument() {
+    if (!selectedDocument) return;
+    setFaqBusy(true); setError("");
+    try {setSelectedDocument(await api.toggleKnowledge(selectedDocument.id, !selectedDocument.enabled)); await reloadKnowledge(); setResults([]); setSearchedQuery("");}
+    catch (reason) {setError((reason as Error).message);} finally {setFaqBusy(false);}
+  }
 
   async function reloadKnowledge() {
     const [items, healthData] = await Promise.all([api.knowledgeDocuments(), api.health()]);
@@ -114,6 +131,7 @@ export function KnowledgeBase() {
   return (
     <div className="page-wrap feature-page">
       <PageHeader title="知识库" description="管理 Agent 的政策依据，并直接验证向量召回效果。" />
+      {canEdit && <div className="commerce-actions"><button className="commerce-button" onClick={() => {setFaqOpen(true); setError("");}}>手动添加 FAQ</button></div>}
 
       <section className="knowledge-hero panel">
         <div className="knowledge-hero-heading"><div className="knowledge-hero-copy"><h2>测试 RAG 知识检索</h2><p>输入自然语言问题，系统会生成查询向量，并返回语义最相近的政策文档。</p></div><button type="button" className="background-task-button" disabled={user?.role !== "admin" || Boolean(importTask && !["finished", "failed"].includes(importTask.status))} onClick={() => importInput.current?.click()}>{importTask && !["finished", "failed"].includes(importTask.status) ? <LoaderCircle className="spin" size={16} /> : <Upload size={16} />}导入 JSON</button><input ref={importInput} hidden type="file" accept="application/json,.json" onChange={importDocuments} /></div>
@@ -154,7 +172,7 @@ export function KnowledgeBase() {
           {loading ? <div className="feature-empty"><LoaderCircle className="spin" size={23} /><strong>正在加载知识库</strong></div> : <div className="document-grid">
             {visibleDocuments.map((document) => <button type="button" className="document-card" key={document.id} onClick={() => void openDocument(document)}>
               <div className="document-icon"><FileText size={18} /></div>
-              <div><span>{categoryLabels[document.category] ?? document.category}</span><h3>{document.title}</h3><p>{document.content}</p><small>{document.source}</small><b className="document-card-open">查看全文 <ArrowUpRight size={12} /></b></div>
+              <div><span>{categoryLabels[document.category] ?? document.category} · {document.enabled ? "已启用" : "已停用"}</span><h3>{document.title}</h3><p>{document.content}</p><small>{document.source}</small><b className="document-card-open">查看全文 <ArrowUpRight size={12} /></b></div>
             </button>)}
           </div>}
           {!loading && visibleDocuments.length === 0 && <div className="feature-empty"><BookOpen size={23} /><strong>该分类还没有文档</strong></div>}
@@ -166,9 +184,10 @@ export function KnowledgeBase() {
           <header><div className="document-modal-icon"><FileText size={21} /></div><div><span>{categoryLabels[selectedDocument.category] ?? selectedDocument.category}</span><h2 id="document-detail-title">{selectedDocument.title}</h2></div><button type="button" aria-label="关闭文档详情" onClick={() => setSelectedDocument(null)}><X size={19} /></button></header>
           <div className="document-modal-meta"><span><Database size={14} />{selectedDocument.source}</span><span><CalendarDays size={14} />录入于 {new Date(selectedDocument.created_at).toLocaleDateString("zh-CN")}</span></div>
           <article><p>{selectedDocument.content}</p></article>
-          <footer><span><Sparkles size={14} />已生成向量，可供 Agent 的 RAG 流程检索</span>{detailLoading && <span><LoaderCircle className="spin" size={14} />同步详情中</span>}</footer>
+          {error && <p className="customer-error">{error}</p>}<footer><span><Sparkles size={14} />{selectedDocument.enabled ? "已启用，可供 Agent 检索" : "已停用，不再参与 Agent 检索"}</span>{canEdit && <button disabled={faqBusy} onClick={() => void toggleDocument()}>{selectedDocument.enabled ? "停用文档" : "启用文档"}</button>}{detailLoading && <span><LoaderCircle className="spin" size={14} />同步详情中</span>}</footer>
         </section>
       </div>}
+      {faqOpen && <div className="document-modal-backdrop"><form className="commerce-dialog panel" onSubmit={saveFaq}><h2>手动添加 FAQ</h2><label>问题标题<input required minLength={2} maxLength={200} value={faq.title} onChange={e => setFaq({...faq,title:e.target.value})} /></label><label>分类<select value={faq.category} onChange={e => setFaq({...faq,category:e.target.value})}>{Object.entries(categoryLabels).filter(([key]) => key !== "all").map(([key,label]) => <option value={key} key={key}>{label}</option>)}</select></label><label>答案与处理规范<textarea required minLength={10} maxLength={20000} rows={6} value={faq.content} onChange={e => setFaq({...faq,content:e.target.value})} /></label>{error && <p className="customer-error">{error}</p>}<div className="commerce-actions"><button type="button" disabled={faqBusy} onClick={() => setFaqOpen(false)}>取消</button><button className="commerce-button" disabled={faqBusy} type="submit">{faqBusy ? "保存中…" : "保存并启用"}</button></div></form></div>}
     </div>
   );
 }

@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 
-def test_health_and_seeded_tickets():
+def test_health_and_shared_knowledge():
     with TestClient(app) as client:
         health = client.get("/api/v1/health")
         assert health.status_code == 200
@@ -17,7 +17,7 @@ def test_health_and_seeded_tickets():
 
         tickets = client.get("/api/v1/tickets")
         assert tickets.status_code == 200
-        assert len(tickets.json()) >= 6
+        assert isinstance(tickets.json(), list)
 
         documents = client.get("/api/v1/knowledge/documents")
         assert documents.status_code == 200
@@ -35,8 +35,12 @@ def test_health_and_seeded_tickets():
 
 def test_agent_workflow_and_human_approval():
     with TestClient(app) as client:
-        tickets = client.get("/api/v1/tickets").json()
-        refund_ticket = next(item for item in tickets if item["ticket_no"] == "TKT-1048")
+        created = client.post("/api/v1/tickets", json={
+            "customer_name": "自动化退款测试客户", "customer_tier": "VIP",
+            "subject": "退款到账进度咨询", "message": "退款审核通过四天了，还没有到账，请协助核实。",
+            "order_id": "ORD-FIXTURE-221", "amount": 329, "priority": "urgent"})
+        assert created.status_code == 201, created.text
+        refund_ticket = created.json()
 
         result = client.post(f"/api/v1/tickets/{refund_ticket['id']}/analyze")
         assert result.status_code == 200, result.text
@@ -83,7 +87,7 @@ def test_agent_workflow_and_human_approval():
         runs = client.get("/api/v1/agents/runs")
         assert runs.status_code == 200
         assert len(runs.json()) >= 8
-        assert runs.json()[0]["ticket_no"] == "TKT-1048"
+        assert runs.json()[0]["ticket_no"] == refund_ticket["ticket_no"]
 
         normal_ticket = client.post(
             "/api/v1/tickets",
@@ -112,14 +116,11 @@ def test_customer_portal_flow():
         assert created.status_code == 201, created.text
         customer_ticket = created.json()
         ticket_id = customer_ticket["id"]
-        assert customer_ticket["stage"] == "submitted"
+        assert customer_ticket["stage"] == "answered"
         assert "assessment" not in customer_ticket
 
-        before_reply = client.post(
-            f"/api/v1/customer/tickets/{ticket_id}/confirmation",
-            json={"resolved": True, "rating": 5},
-        )
-        assert before_reply.status_code == 409
+        assert customer_ticket["messages"][-1]["role"] == "support"
+        assert "请您提供订单编号" in customer_ticket["messages"][-1]["content"]
 
         sent = client.post(
             f"/api/v1/tickets/{ticket_id}/draft/send",
@@ -132,7 +133,7 @@ def test_customer_portal_flow():
         assert refreshed.status_code == 200
         assert refreshed.json()["stage"] == "answered"
         assert refreshed.json()["sent_response"] == "您好，已收到您的反馈，当前需要进一步核查配送情况，我们会继续提供处理建议。"
-        assert [item["role"] for item in refreshed.json()["messages"]] == ["customer", "support"]
+        assert [item["role"] for item in refreshed.json()["messages"]] == ["customer", "support", "support"]
 
         needs_more_help = client.post(
             f"/api/v1/customer/tickets/{ticket_id}/confirmation",
@@ -147,8 +148,8 @@ def test_customer_portal_flow():
             json={"message": "可以告诉我预计什么时候送到吗？"},
         )
         assert follow_up.status_code == 200, follow_up.text
-        assert follow_up.json()["stage"] == "processing"
-        assert follow_up.json()["messages"][-1]["role"] == "customer"
+        assert follow_up.json()["stage"] == "answered"
+        assert follow_up.json()["messages"][-1]["role"] == "support"
         assert follow_up.json()["customer_confirmed"] is None
 
         second_reply = client.post(
@@ -160,7 +161,7 @@ def test_customer_portal_flow():
         reopened = client.get(f"/api/v1/customer/tickets/{ticket_id}").json()
         assert reopened["stage"] == "answered"
         assert reopened["customer_confirmed"] is None
-        assert [item["role"] for item in reopened["messages"]] == ["customer", "support", "customer", "support"]
+        assert [item["role"] for item in reopened["messages"]] == ["customer", "support", "support", "customer", "support", "support"]
 
         confirmed = client.post(
             f"/api/v1/customer/tickets/{ticket_id}/confirmation",
@@ -174,4 +175,4 @@ def test_customer_portal_flow():
         internal = client.get(f"/api/v1/tickets/{ticket_id}").json()
         assert internal["status"] == "resolved"
         assert internal["audit_events"][-1]["agent"] == "客户"
-        assert len(internal["conversation"]) == 4
+        assert len(internal["conversation"]) == 6

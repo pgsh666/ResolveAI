@@ -1,83 +1,50 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
-import {
-  Activity,
-  BookOpen,
-  Bot,
-  FileCheck2,
-  LayoutDashboard,
-  MessagesSquare,
-  Settings,
-  TicketCheck,
-} from "lucide-react";
-import { api } from "@/lib/api";
-import { SessionActions, useAuth } from "@/components/AuthProvider";
-
-
-const navigation = [
-  { label: "总览", href: "/", icon: LayoutDashboard },
-  { label: "工单中心", href: "/tickets", icon: TicketCheck, count: "total" },
-  { label: "Agent 运行", href: "/agents", icon: Bot },
-  { label: "人工审批", href: "/tickets?status=pending_approval", icon: FileCheck2, count: "pending" },
-  { label: "知识库", href: "/knowledge", icon: BookOpen },
-  { label: "效果分析", href: "/analytics", icon: Activity },
-  { label: "项目设置", href: "/settings", icon: Settings },
-  { label: "客户模拟端", href: "/customer", icon: MessagesSquare },
-  { label: "账号管理", href: "/accounts", icon: Settings },
-];
+import { usePathname } from "next/navigation";
+import { useState } from "react";
+import { Activity, BookOpen, Bot, ChevronDown, LayoutDashboard, Menu, MessageCircle, Package, Route, Settings, ShoppingBag, TicketCheck, Users, X } from "lucide-react";
+import { SessionActions } from "@/components/AuthProvider";
 
 export function Sidebar() {
-  const { user } = useAuth();
   const pathname = usePathname();
-  const searchParams = useSearchParams();
-  const ticketStatus = searchParams.get("status");
-  const [ticketCounts, setTicketCounts] = useState({ total: 0, pending: 0 });
-
-  useEffect(() => {
-    let cancelled = false;
-    api.tickets().then((tickets) => {
-      if (cancelled) return;
-      setTicketCounts({
-        total: tickets.length,
-        pending: tickets.filter((ticket) => ticket.status === "pending_approval").length,
-      });
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [pathname, ticketStatus]);
-
-  const isActive = (href: string) => {
-    if (href === "/") return pathname === "/";
-    if (href === "/tickets") return pathname.startsWith("/tickets") && ticketStatus !== "pending_approval";
-    if (href === "/tickets?status=pending_approval") {
-      return pathname === "/tickets" && ticketStatus === "pending_approval";
-    }
-    return pathname === href;
-  };
-
-  return (
-    <header className="topbar">
-      <Link className="topbar-brand" href="/" aria-label="ResolveAI 首页">
-        <span className="topbar-brand-copy"><strong>ResolveAI</strong></span>
-      </Link>
-
-      <nav className="topbar-nav" aria-label="主导航">
-        {navigation.filter((item) => item.href !== "/accounts" || user?.role === "admin").map((item) => {
-          const active = isActive(item.href);
-          const Icon = item.icon;
-          const count = item.count === "total" ? ticketCounts.total : item.count === "pending" ? ticketCounts.pending : 0;
-          return (
-            <Link className={`topbar-item ${active ? "active" : ""}`} href={item.href} key={item.label}>
-              <Icon size={16} />
-              <span>{item.label}</span>
-              {count > 0 && <i>{count}</i>}
-            </Link>
-          );
-        })}
+  const [managementOpen, setManagementOpen] = useState(true);
+  const [customersOpen, setCustomersOpen] = useState(true);
+  const [agentOpen, setAgentOpen] = useState(true);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const active = (href: string) => href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(href + "/");
+  const managementActive = ["/products", "/chats", "/orders", "/tickets", "/settings", "/questions"].some(active);
+  const agentActive = ["/agents", "/knowledge", "/analytics"].some(active);
+  const customerLinks = [{label:"聊天管理",href:"/chats",icon:MessageCircle},{label:"订单管理",href:"/orders",icon:ShoppingBag},{label:"售后处理",href:"/tickets",icon:TicketCheck}];
+  const agentLinks = [{label:"Agent运行",href:"/agents",icon:Bot},{label:"知识库",href:"/knowledge",icon:BookOpen},{label:"效果分析",href:"/analytics",icon:Activity}];
+  function item(label: string, href: string, Icon: typeof Package, level = 2) {
+    return <Link key={href} href={href} aria-current={active(href) ? "page" : undefined} className={"admin-nav-link level-" + level + (active(href) ? " active" : "")} onClick={() => setDrawerOpen(false)}><Icon size={17} /><span>{label}</span></Link>;
+  }
+  return <>
+    <button type="button" className="admin-sidebar-toggle" aria-label="打开导航" aria-expanded={drawerOpen} aria-controls="merchant-sidebar" onClick={() => setDrawerOpen(!drawerOpen)}><Menu size={21} /><span>导航</span></button>
+    {drawerOpen && <button type="button" className="admin-sidebar-backdrop" aria-label="关闭导航遮罩" onClick={() => setDrawerOpen(false)} />}
+    <aside id="merchant-sidebar" className={"admin-sidebar-panel" + (drawerOpen ? " is-open" : "")} aria-label="商户侧边栏">
+      <div className="admin-sidebar-brand"><Link href="/" onClick={() => setDrawerOpen(false)}>ResolveAI</Link><button type="button" className="admin-sidebar-close" aria-label="关闭导航" onClick={() => setDrawerOpen(false)}><X size={20} /></button></div>
+      <nav className="admin-sidebar-nav" aria-label="主导航">
+        <ul className="admin-primary-list">
+          <li>{item("总览", "/", LayoutDashboard, 1)}</li>
+          <li>
+            <button type="button" className={"admin-nav-group" + (managementActive ? " active" : "")} aria-expanded={managementOpen} aria-controls="management-menu" onClick={() => setManagementOpen(!managementOpen)}><Settings size={18} /><span>管理</span><ChevronDown size={16} className={managementOpen ? "expanded" : ""} /></button>
+            {managementOpen && <div id="management-menu" className="admin-submenu">
+              {item("商品管理", "/products", Package)}
+              <button type="button" className={"admin-nav-group level-2" + (["/chats","/orders","/tickets"].some(active) ? " active" : "")} aria-expanded={customersOpen} aria-controls="customers-menu" onClick={() => setCustomersOpen(!customersOpen)}><Users size={17} /><span>客户管理</span><ChevronDown size={16} className={customersOpen ? "expanded" : ""} /></button>
+              {customersOpen && <div id="customers-menu" className="admin-submenu">{customerLinks.map(link => item(link.label, link.href, link.icon, 3))}</div>}
+              {item("项目设置", "/settings", Settings)}
+              {item("提问与路由记录", "/questions", Route)}
+            </div>}
+          </li>
+          <li>
+            <button type="button" className={"admin-nav-group" + (agentActive ? " active" : "")} aria-expanded={agentOpen} aria-controls="agent-menu" onClick={() => setAgentOpen(!agentOpen)}><Bot size={18} /><span>Agent</span><ChevronDown size={16} className={agentOpen ? "expanded" : ""} /></button>
+            {agentOpen && <div id="agent-menu" className="admin-submenu">{agentLinks.map(link => item(link.label, link.href, link.icon))}</div>}
+          </li>
+        </ul>
       </nav>
-      <SessionActions />
-    </header>
-  );
+      <footer className="admin-sidebar-footer"><Link href="/accounts" className="admin-account-link" onClick={() => setDrawerOpen(false)}><Settings size={15} />我的账号</Link><SessionActions /></footer>
+    </aside>
+  </>;
 }

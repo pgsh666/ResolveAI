@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { api } from "@/lib/api";
+import { serviceDisplayText } from "@/lib/presentation";
 import type { AgentRun, AgentTopology, HealthData } from "@/lib/types";
 
 
@@ -103,7 +104,7 @@ export function AgentOperations() {
             <Link className="run-row" href={`/tickets/${run.ticket_id}`} key={run.id}>
               <span><strong>{formatTime(run.created_at)}</strong><small>{run.ticket_no}</small></span>
               <span>{run.agent}</span>
-              <span><strong>{run.action}</strong><small>{run.summary}</small></span>
+              <span><strong>{serviceDisplayText(run.action)}</strong><small>{serviceDisplayText(run.summary)}</small></span>
               <span>{run.duration_ms}ms</span>
               <span className="run-status"><CheckCircle2 size={13} />{run.status === "completed" ? "完成" : run.status}</span>
             </Link>

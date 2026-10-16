@@ -58,8 +58,7 @@ python -m evaluation.run --fail-under 80
 先在 PyCharm Terminal 中执行免费计划检查：
 
 ```powershell
-# 从克隆后的项目根目录执行
-Set-Location backend
+cd backend
 python -m evaluation.run --provider deepseek --smoke --dry-run
 ```
 
@@ -119,7 +118,7 @@ python -m evaluation.run --provider deepseek --env-file ..\.env --embedding-prov
 
 先把`--allow-paid-api`替换为`--dry-run`可以免费检查计划。25条是本项目自建的补充留出集，不是外部独立业务测试集；应在查看其评测输出前冻结参数，失败结果保留，不改标注追分。
 
-已有回归记录为57/60，补充集为23/25；指标口径与限制见[项目汇总](../../docs/RESULTS.md)。原始报告和逐条复核材料仅保存在本地运行目录，不随公开仓库发布。补充集已用于改进，不再视作当前版本的独立未见集；真人语义复核仍待完成。
+本轮回归报告：`reports/live/20261012T055038Z-6318f55b`（57/60）；留出报告：`reports/live/20261012T065419Z-38ebb8fd`（23/25）。原基线及原60条JSONL保留。真人语义复核仍待完成，AI辅助观察见项目`output/closeout/AI-assisted-review.md`。
 
 ### 离线代码测试
 

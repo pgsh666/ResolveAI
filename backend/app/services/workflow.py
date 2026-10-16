@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from time import perf_counter
 from uuid import uuid4
 
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.agents.graph import build_support_graph
 from app.models import Approval, AuditEvent, Ticket, TicketAccess, ToolExecution, WorkflowCheckpoint, utc_now
-from app.schemas import Citation, TicketDetail
+from app.schemas import Citation, CustomerFeedbackOut, TicketDetail
 from app.services.checkpoint import SQLAlchemyCheckpointSaver
 from app.services.confidence import calculate_confidence
 from app.core.observability import current_trace_id, trace_url, traced_workflow
@@ -53,6 +54,14 @@ class WorkflowService:
                     "ticket_no": ticket.ticket_no,
                     "customer_name": redact_text(ticket.customer_name),
                     "customer_tier": ticket.customer_tier,
+                    "channel": ticket.channel,
+                    "owner_id": (self.session.get(TicketAccess, ticket.id).owner_id
+                                 if self.session.get(TicketAccess, ticket.id) else None),
+                    "customer_owned": bool(self.session.get(TicketAccess, ticket.id)),
+                    "handoff_active": previous_assessment.get("handoff", {}).get("active", False),
+                    "memory": {"original_question": safe_conversation[0].get("content", "") if safe_conversation else ticket.message,
+                               "customer_turns": [m["content"] for m in safe_conversation if m.get("role") == "customer"][-20:],
+                               "customer_feedback": previous_assessment.get("customer_feedback_history", [])[-10:]},
                     "subject": redact_text(ticket.subject),
                     "message": redact_text(ticket.message),
                     "priority": ticket.priority,
@@ -215,6 +224,8 @@ class WorkflowService:
             "escalated_to_human": waiting_for_approval,
         }
         ticket.category = triage["category"]
+        if state["customer_context"].get("tool_source") == "shop_database" and state["customer_context"].get("context_available"):
+            ticket.order_id = state["customer_context"].get("order_id")
         ticket.priority = triage["priority"]
         ticket.sentiment = triage["sentiment"]
         ticket.confidence = confidence_breakdown["final_score"]
@@ -227,6 +238,7 @@ class WorkflowService:
             None
             if decision and previous_assessment.get("sent_response")
             and messages and messages[-1].get("role") == "support"
+            and messages[-1].get("id") != previous_assessment.get("handoff_ack_id")
             else redact_text(resolution["draft_response"])
         )
         ticket.requires_approval = resolution["requires_approval"]
@@ -267,8 +279,11 @@ class WorkflowService:
                 or state.get("conversation")
                 or ticket_conversation(ticket)
             ),
+            "handoff": {"active": waiting_for_approval or previous_assessment.get("handoff", {}).get("active", False),
+                        "reasons": state.get("policy", {}).get("handoff_reasons", [])},
+            "memory": state.get("ticket", {}).get("memory", {}),
         }
-        for key in ("sent_response", "sent_at"):
+        for key in ("sent_response", "sent_at", "customer_feedback_history", "handoff_ack_id"):
             if previous_assessment.get(key):
                 ticket.assessment[key] = (
                     redact_text(previous_assessment[key])
@@ -388,6 +403,9 @@ def _snapshot_has_interrupt(snapshot) -> bool:
 
 
 def _approval_reason(state: dict) -> str:
+    reasons = state.get("policy", {}).get("handoff_reasons", [])
+    if reasons:
+        return "；".join(reasons)
     security_reasons = state.get("security", {}).get("reasons", [])
     if security_reasons:
         return "安全策略要求人工确认：" + ", ".join(security_reasons)
@@ -395,7 +413,7 @@ def _approval_reason(state: dict) -> str:
     if failures:
         codes = ", ".join(str(item.get("code", "UNKNOWN_FAILURE")) for item in failures)
         return f"自动流程出现异常或依据不足，需要人工确认：{codes}"
-    return "退款金额超过100元或命中风险规则，需要人工确认"
+    return "退款或命中转人工规则，需要人工确认"
 
 
 def ticket_to_detail(session: Session, ticket: Ticket) -> TicketDetail:
@@ -416,8 +434,47 @@ def ticket_to_detail(session: Session, ticket: Ticket) -> TicketDetail:
         sent_response=assessment.get("sent_response"),
         sent_at=assessment.get("sent_at"),
         conversation=ticket_conversation(ticket),
+        customer_feedbacks=ticket_customer_feedback(ticket, events),
     )
     return TicketDetail.model_validate(data)
+
+
+def ticket_customer_feedback(ticket: Ticket, events: list[AuditEvent]) -> list[CustomerFeedbackOut]:
+    """Read durable confirmations, including ones superseded by further conversation."""
+    def record(source, identifier, created_at):
+        if isinstance(created_at, str):
+            try:
+                created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            except ValueError:
+                created_at = None
+        if isinstance(created_at, datetime) and created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        rating = source.get("rating")
+        return CustomerFeedbackOut(
+            id=identifier,
+            resolved=source.get("resolved") if isinstance(source.get("resolved"), bool) else None,
+            rating=rating if type(rating) is int and 1 <= rating <= 5 else None,
+            feedback=redact_text(source.get("feedback") if isinstance(source.get("feedback"), str) else ""),
+            created_at=created_at,
+        )
+
+    rows = [record(event.details or {}, event.id, event.created_at) for event in events
+            if event.agent == "客户" and event.action == "确认处理结果"]
+    if not rows:
+        # Old snapshots may predate audit confirmations. Never rewrite them or
+        # invent ratings/timestamps; the legacy history only stored unresolved feedback.
+        assessment = ticket.assessment or {}
+        snapshots = [{**item, "resolved": False} for item in assessment.get("customer_feedback_history", [])
+                     if isinstance(item, dict)]
+        confirmation = assessment.get("customer_confirmation")
+        if isinstance(confirmation, dict) and confirmation:
+            snapshots.append(confirmation)
+        unique = {}
+        for index, item in enumerate(snapshots):
+            row = record(item, f"{ticket.id}-feedback-{index}", item.get("confirmed_at") or item.get("created_at"))
+            unique[(row.created_at, row.feedback, row.resolved)] = row
+        rows = list(unique.values())
+    return sorted(rows, key=lambda item: item.created_at or datetime.min.replace(tzinfo=timezone.utc))
 
 
 def ticket_conversation(ticket: Ticket) -> list[dict]:
