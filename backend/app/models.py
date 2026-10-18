@@ -267,6 +267,8 @@ class TicketAccess(Base):
     ticket_id: Mapped[str] = mapped_column(String(36), ForeignKey("tickets.id", ondelete="CASCADE"), primary_key=True)
     owner_id: Mapped[str] = mapped_column(String(36), ForeignKey("accounts.id"), index=True)
     workspace_id: Mapped[str] = mapped_column(String(80), index=True)
+    # Client visibility only. Never hide the ticket from merchant queries or audits.
+    customer_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TaskAccess(Base):

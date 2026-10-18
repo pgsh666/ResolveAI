@@ -14,6 +14,7 @@ from app.core.observability import get_tracer, safe_error_message, set_span_attr
 from app.schemas import DraftRewriteResult, ResolutionResult, TriageResult
 from uuid import uuid4
 from app.services.costs import estimate_cost
+from app.services.customer_reply import CUSTOMER_REPLY_INSTRUCTION
 
 
 logger = logging.getLogger(__name__)
@@ -122,8 +123,9 @@ class LLMService:
                     "catalog_query和catalog_topic说明当前商品主题，追问‘还有别的吗’等应延续最近主题，不重新混入早先其他商品。"
                     "只有用户询问上新/补货时间且catalog_intent=availability_plan、availability_plan_available=false时，应说明具体时间未知，不推测日期或承诺通知。"
                     "商城咨询可以查询在售商品、库存、价格比较与物流；仅引用trusted_tool_context的真实数据。"
+                    "已上架但stock=0的商品是已售罄，不是商品不存在；应说明暂时无法下单，不因缺货转人工，不把缺货商品推荐为可购买商品，不编造补货日期。"
                     + ("以数据库提供的completed_operations为已执行事实；未在其中记录的动作均未执行。"
-                     "若记录mode=simulated，回复必须明确是项目模拟执行，不代表真实资金到账。"
+                     "若记录mode=simulated，回复必须明确：本项目不处理真实资金，不产生真实扣款或资金到账。"
                      if ticket.get("completed_operations") else
                      "当前仅生成待发送建议，并未执行退款、发券、补发、联系物流、照片核验或支付对账。")
                     + ("不得声称未经记录的动作已经完成、已提交或已确认。" if ticket.get("completed_operations")
@@ -139,6 +141,7 @@ class LLMService:
                     "退款到账时效不得改写成人工审核耗时；发起调查时限不得变成出结果时限。"
                     "若订单数据与客户自述冲突，要明确区分‘您反馈’和‘工具查询’，不能直接认定已签收或符合退款条件。"
                     "不得编造APP菜单、上传入口或链接。只有引用明确提供的入口或本系统真实按钮可描述。"
+                    f"{CUSTOMER_REPLY_INSTRUCTION}"
                     f"{TRUST_BOUNDARY_INSTRUCTION}"
                 ),
                 prompt,
@@ -170,7 +173,8 @@ class LLMService:
                     "政策结论或承诺时效。输出完整的中文客服回复。"
                     "以trusted_ticket_facts.approval_state与completed_operations为当前事实。"
                     "已批准但未执行不能写成已退款；只有完成的工具记录才可描述已执行，"
-                    "mode=simulated的资金结果必须注明本项目模拟执行，不表示真实到账。"
+                    "mode=simulated的资金结果必须明确：本项目不处理真实资金，不产生真实扣款或资金到账。"
+                    f"{CUSTOMER_REPLY_INSTRUCTION}"
                     f"{TRUST_BOUNDARY_INSTRUCTION}"
                 ),
                 prompt,
@@ -542,7 +546,7 @@ class LLMService:
                     draft_response=(
                         f"您好，{ticket['customer_name']}。我们已收到您的退款进度咨询。"
                         "请核对原退款流水和支付渠道；审核通过后的到账时间以支付渠道实际处理结果为准。"
-                        "若已超过政策时效，可请支付专员进一步核实。当前没有执行新的退款。"
+                        "如果已超过到账时效，您可以告诉我具体情况，再由人工客服协助核实。"
                     ),
                     requires_approval=bool(policy.get("must_review")), confidence=0.8,
                 )
@@ -569,7 +573,7 @@ class LLMService:
                 rationale="物流已超过承诺时效，优先催单并进行低风险补偿。",
                 draft_response=(
                     f"您好，{ticket['customer_name']}。很抱歉给您带来配送不便。建议先核对物流轨迹，"
-                    "符合延误政策时可提交催单或关怀申请，实际补偿须核实并按权限审批；当前尚未执行发券或补发。"
+                    "如果配送延误符合补偿条件，可以申请相应补偿，具体需由人工客服核实后办理。"
                 ),
                 requires_approval=False,
                 confidence=0.88,
@@ -579,7 +583,7 @@ class LLMService:
             rationale="当前信息不足以安全执行资金或账号操作，需要专员补充核验。",
             draft_response=(
                 f"您好，{ticket['customer_name']}。您的问题我们已经记录。建议核实必要信息，"
-                "如需专员协助可提交进一步核查；当前未执行资金或账号操作，后续进度会在此对话同步。"
+                "您可以补充具体遇到的情况，我再帮您看看如何处理；如需人工客服协助，也可以直接告诉我。"
             ),
             requires_approval=False,
             confidence=0.76,

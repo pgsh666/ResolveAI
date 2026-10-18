@@ -4,6 +4,7 @@ from sqlalchemy import select
 
 from app.models import QuestionRoute, ModelUsage, WorkflowRun, WorkflowCheckpoint, AuditEvent, new_id, utc_now
 from app.services.workflow import WorkflowService, ticket_conversation
+from app.services.customer_reply import human_handoff_reply
 
 
 def begin_question(session, ticket):
@@ -49,7 +50,7 @@ async def answer_question(session, ticket, row):
         row.route = "human_queue" if row.handed_off else (ticket.assessment or {}).get("customer_context", {}).get("assistant_route", "agent")
         if row.handed_off:
             row.outcome = "handed_off"
-            append_reply(ticket, "您好，您的问题已转交人工客服。" + ("原因：" + "；".join(row.handoff_reasons) + "。" if row.handoff_reasons else "需要进一步核验。") + "您可以继续在此补充信息；本轮未执行退款或其他资金操作。")
+            append_reply(ticket, human_handoff_reply(row.handoff_reasons))
             assessment = dict(ticket.assessment)
             assessment["handoff_ack_id"] = assessment["conversation"][-1]["id"]
             ticket.assessment = assessment
@@ -83,7 +84,7 @@ async def answer_question(session, ticket, row):
         assessment["handoff"] = {"active": True, "reasons": row.handoff_reasons}
         ticket.assessment = assessment
         ticket.status = "needs_review"
-        append_reply(ticket, "您好，本轮自动处理未完成，已保留您的问题并转交人工客服，您无需重新提交。")
+        append_reply(ticket, "您好，抱歉没能直接解决您的问题，已为您转接人工客服。您可以继续在这里补充情况，无需重复提交。")
         row.steps = [{"agent": "异常降级", "duration_ms": round((perf_counter() - timer) * 1000, 3), "status": "failed", "summary": "自动处理失败，保留对话并转人工"}]
         checkpoint = session.scalar(select(WorkflowCheckpoint).where(WorkflowCheckpoint.ticket_id == ticket.id))
         if checkpoint:

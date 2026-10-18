@@ -164,7 +164,7 @@ docker compose -p resolveai-acceptance -f docker-compose.yml -f docker-compose.a
 
 ## 8. 迁移、备份和恢复
 
-启动使用 Alembic 0001/0002/0003，再补通用知识和初始管理员；0003 新增商城和提问记录，并按北京时间重排历史工单显示编号，原编号留存在 legacy_ticket_no，UUID 与对话关联保持不变。重复启动不重复插通用知识；公开副本不补预置业务工单或商品，默认拒绝破坏性降级。商城扩展的前端验收见 [COMMERCE](COMMERCE.md)。
+启动使用 Alembic 0001/0002/0003/0004，再补通用知识和初始管理员；0003 新增商城和提问记录，并按北京时间重排历史工单显示编号，原编号留存在 legacy_ticket_no，UUID 与对话关联保持不变。0004 为客户会话归属增加可空的客户端删除时间，已有记录默认可见；该标记不影响商户聊天、售后、审批或订单记录。重复启动不重复插通用知识；公开副本不补预置业务工单或商品，默认拒绝破坏性降级。商城扩展的前端验收见 [COMMERCE](COMMERCE.md)。
 
 Windows Docker 升级前 `scripts/backup-database.ps1` 生成私密二进制 pg_dump。一键启动自动执行它；手动 Compose 不会自动执行此宿主机步骤。原生 PostgreSQL 不由该 Docker 脚本备份，需要对其对应实例另行备份。
 

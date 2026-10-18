@@ -9,6 +9,7 @@ class SupportState(TypedDict, total=False):
     customer_context: dict[str, Any]
     citations: list[dict[str, Any]]
     rag_status: dict[str, Any]
+    manual_faq: dict[str, Any] | None
     policy: dict[str, Any]
     resolution: dict[str, Any]
     quality: dict[str, Any]

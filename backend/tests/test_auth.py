@@ -29,6 +29,64 @@ def signup(client, prefix="customer"):
     return response.json()["user"]
 
 
+@pytest.mark.parametrize("value,expected", [
+    ("张三", "张三"), ("  张三PG_01.test-2  ", "张三pg_01.test-2"),
+    ("Alice_01.test-2", "alice_01.test-2"), ("用户" * 40, "用户" * 40),
+    ("𠮷先生", "𠮷先生"),
+])
+def test_username_normalization_accepts_chinese_and_preserves_existing_ascii_rules(value, expected):
+    from app.services.auth import normalize_username
+    assert normalize_username(value) == expected
+
+
+@pytest.mark.parametrize("value", ["张", "", "   ", "张" * 81, "张 三", "_张三", "张三/客户", "张三😀", "张三\n用户", "<张三>"])
+def test_username_still_rejects_blank_oversized_and_unsafe_characters(value):
+    from fastapi import HTTPException
+    from app.services.auth import normalize_username
+    with pytest.raises(HTTPException) as error:
+        normalize_username(value)
+    assert error.value.status_code == 422 and "中文" in error.value.detail
+
+
+@pytest.mark.parametrize("username,login_name", [("张三", "张三"), ("测试客户PG01", "测试客户pg01"), ("用户_01.test-2", "用户_01.TEST-2"), ("𠮷先生", "𠮷先生")])
+def test_chinese_username_can_register_then_explicitly_login(protected, username, login_name):
+    password = "1"  # Customer password policy remains unchanged.
+    response = protected.post("/api/v1/auth/register", json={"username": username, "password": password,
+                              "display_name": "中文用户名测试客户", "auto_login": False})
+    assert response.status_code == 201, response.text
+    user = response.json()["user"]
+    assert user["username"] == username.lower() and user["role"] == "customer"
+    assert protected.get("/api/v1/auth/me").status_code == 401
+    login = protected.post("/api/v1/auth/login", json={"username": login_name, "password": password})
+    assert login.status_code == 200, login.text
+    assert login.json()["user"]["id"] == user["id"]
+    assert protected.get("/api/v1/auth/me").json()["user"]["username"] == username.lower()
+    assert protected.get("/api/v1/tickets").status_code == 403
+
+
+def test_normalized_duplicate_chinese_username_is_rejected_without_overwriting_account(protected):
+    username = "重名客户PG" + uuid4().hex[:8]
+    payload = {"username": username, "password": "1", "display_name": "原客户", "auto_login": False}
+    first = protected.post("/api/v1/auth/register", json=payload)
+    assert first.status_code == 201
+    duplicate = protected.post("/api/v1/auth/register", json={**payload, "username": "  " + username.lower() + "  ",
+                                  "password": "2", "display_name": "不得覆盖"})
+    assert duplicate.status_code == 409 and duplicate.json()["detail"] == "用户名已存在"
+    login = protected.post("/api/v1/auth/login", json={"username": username, "password": "1"})
+    assert login.status_code == 200 and login.json()["user"]["id"] == first.json()["user"]["id"]
+
+
+def test_chinese_bootstrap_username_is_reserved_for_staff(protected):
+    settings = get_settings()
+    original = settings.auth_bootstrap_users
+    settings.auth_bootstrap_users = [{"username": "后台管理员测试", "role": "admin", "password": "Fixture-Only-Admin-Pass!"}]
+    try:
+        response = protected.post("/api/v1/auth/register", json={"username": "后台管理员测试", "password": "1", "display_name": "不能占用"})
+        assert response.status_code == 409
+    finally:
+        settings.auth_bootstrap_users = original
+
+
 def test_login_required_and_registration_cannot_promote_role(protected):
     assert protected.get("/api/v1/tickets").status_code == 401
     assert protected.get("/api/v1/health").status_code == 200

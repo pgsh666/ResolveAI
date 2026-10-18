@@ -71,7 +71,8 @@ def test_customer_api_enforces_duplicate_charge_boundary():
         assert response.status_code == 201, response.text
         ticket = response.json()
         assert ticket["handed_off"] is True
-        assert "未执行退款" in ticket["sent_response"]
+        assert "扣款" in ticket["sent_response"] and "转接" in ticket["sent_response"]
+        assert "已为您退款" not in ticket["sent_response"] and "本轮" not in ticket["sent_response"]
 
 
 def test_query_expansion_uses_business_language_not_case_or_source_ids():

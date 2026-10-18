@@ -2,10 +2,11 @@
 
 import Image from "next/image";
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import { CheckCircle2, LoaderCircle, MessageCircleMore, Plus, Send, Star, UserRound } from "lucide-react";
+import { CheckCircle2, LoaderCircle, MessageCircleMore, Plus, Send, Star, Trash2, UserRound } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/components/AuthProvider";
 import { CustomerHeader } from "@/components/CustomerHeader";
+import { DeleteChatDialog } from "@/components/DeleteChatDialog";
 import { formatBusinessTime } from "@/lib/time";
 import { serviceDisplayText } from "@/lib/presentation";
 import type { CustomerTicket, CustomerTicketStage } from "@/lib/types";
@@ -31,6 +32,10 @@ export function CustomerPortal() {
   const [feedback, setFeedback] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<CustomerTicket | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+  const deletingRef = useRef(false);
   const sendingRef = useRef(false);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
@@ -38,7 +43,7 @@ export function CustomerPortal() {
   const ticketStage = ticket?.stage;
   const lastMessage = ticket?.messages.at(-1);
   const messages = ticket?.messages ?? [];
-  const busy = sending || confirming || restoring;
+  const busy = sending || confirming || restoring || deleteTarget !== null;
   const round = Math.max(messages.filter(m => m.role === "customer").length - 1, 0);
   const mascotTop = 98 + Math.min(round, 5) * 94;
 
@@ -65,13 +70,13 @@ export function CustomerPortal() {
   }, [storageKey]);
 
   useEffect(() => {
-    if (!ticketId || ticketStage === "resolved" || sending) return;
+    if (!ticketId || ticketStage === "resolved" || sending || deleteTarget) return;
     let active = true;
     const timer = window.setInterval(() => {
       api.customerTicket(ticketId).then(value => { if (active) setTicket(value); }).catch(() => undefined);
     }, 3000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [ticketId, ticketStage, sending]);
+  }, [ticketId, ticketStage, sending, deleteTarget]);
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -87,7 +92,7 @@ export function CustomerPortal() {
 
   async function sendMessage(text: string) {
     const content = text.trim();
-    if (!content || sendingRef.current || confirming || restoring) return;
+    if (!content || sendingRef.current || busy) return;
     sendingRef.current = true;
     setSending(true);
     setPendingMessage(content);
@@ -147,6 +152,10 @@ export function CustomerPortal() {
 
   function startNewConversation() {
     if (busy) return;
+    resetConversation();
+  }
+
+  function resetConversation() {
     window.localStorage.removeItem(storageKey);
     window.history.replaceState(null, "", "/customer");
     setTicket(null);
@@ -156,6 +165,26 @@ export function CustomerPortal() {
     setFeedback("");
     setFeedbackOpen(false);
     setError("");
+  }
+
+
+  async function deleteConversation() {
+    if (!deleteTarget || deletingRef.current) return;
+    deletingRef.current = true;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await api.deleteCustomerChat(deleteTarget.id);
+      setHistory(items => items.filter(item => item.id !== deleteTarget.id));
+      if (ticketId === deleteTarget.id) resetConversation();
+      else if (window.localStorage.getItem(storageKey) === deleteTarget.id) window.localStorage.removeItem(storageKey);
+      setDeleteTarget(null);
+    } catch (reason) {
+      setDeleteError((reason as Error).message || "删除失败，请稍后重试");
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+    }
   }
 
   async function confirmResult(resolved: boolean) {
@@ -179,7 +208,10 @@ export function CustomerPortal() {
           <button type="button" className="assistant-new-chat" disabled={busy} onClick={startNewConversation}><Plus size={17} />新对话</button>
           <h2>对话记录</h2>
           <div className="assistant-history-list">
-            {history.map(item => <button type="button" className={item.id === ticketId ? "active" : ""} disabled={busy} key={item.id} onClick={() => void openConversation(item.id)}><MessageCircleMore size={16} /><span><strong>{item.subject}</strong><small>{item.ticket_no}</small></span></button>)}
+            {history.map(item => <div className={`assistant-history-item${item.id === ticketId ? " active" : ""}`} key={item.id} data-conversation-id={item.id}>
+              <button type="button" className="assistant-history-open" aria-current={item.id === ticketId ? "page" : undefined} disabled={busy} onClick={() => void openConversation(item.id)}><MessageCircleMore size={16} /><span><strong>{item.subject}</strong><small>{item.ticket_no}</small></span></button>
+              <button type="button" className="assistant-history-delete" aria-label={`删除聊天：${item.subject}（${item.ticket_no}）`} title="删除聊天" aria-haspopup="dialog" disabled={busy} onClick={() => { setDeleteError(""); setDeleteTarget(item); }}><Trash2 size={16} aria-hidden="true" /></button>
+            </div>)}
             {!history.length && <p>您的对话会保存在这里。</p>}
           </div>
         </aside>
@@ -229,6 +261,8 @@ export function CustomerPortal() {
           </div>
         </section>
       </main>
+      {deleteTarget && <DeleteChatDialog subject={deleteTarget.subject} busy={deleting} error={deleteError}
+        onCancel={() => { if (!deletingRef.current) setDeleteTarget(null); }} onConfirm={() => void deleteConversation()} />}
     </div>
   );
 }

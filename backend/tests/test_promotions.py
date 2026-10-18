@@ -37,7 +37,7 @@ def test_promotion_inquiry_is_in_scope_without_inventing_coupon_or_requiring_ord
         assert response.status_code == 201, response.text
         ticket = response.json()
         assert ticket["handed_off"] is False, ticket["sent_response"]
-        assert "暂时无法查询到" in ticket["sent_response"] and "不能确认是否有可用优惠" in ticket["sent_response"]
+        assert "暂时无法确认" in ticket["sent_response"] and "优惠券或促销活动" in ticket["sent_response"]
         assert "与购物无关" not in ticket["sent_response"] and "请您提供订单编号" not in ticket["sent_response"]
         assert "没有优惠券" not in ticket["sent_response"] and "已发放" not in ticket["sent_response"]
         assert "【" not in ticket["sent_response"] and "元" not in ticket["sent_response"]
@@ -60,12 +60,12 @@ def test_product_then_coupon_question_switches_route_and_can_continue_shopping(m
         assert not first["handed_off"]
         no_promotion_policy(monkeypatch)
         second = client.post(f"/api/v1/customer/tickets/{first['id']}/messages", json={"message":"有优惠券吗"}).json()
-        assert not second["handed_off"] and "不能确认是否有可用优惠" in second["sent_response"]
+        assert not second["handed_off"] and "暂时无法确认" in second["sent_response"]
         detail, rows = detail_and_routes(client, first["id"])
         assert detail["assessment"]["customer_context"]["assistant_route"] == "promotions"
         assert {r["route"] for r in rows} == {"catalog", "promotions"}
         follow = client.post(f"/api/v1/customer/tickets/{first['id']}/messages", json={"message":"在哪里领"}).json()
-        assert not follow["handed_off"] and "不能确认是否有可用优惠" in follow["sent_response"]
+        assert not follow["handed_off"] and "暂时无法确认" in follow["sent_response"]
         third = client.post(f"/api/v1/customer/tickets/{first['id']}/messages", json={"message":"那帮我找更便宜的耳机"}).json()
         assert not third["handed_off"] and "蓝牙耳机" in third["sent_response"]
         detail, _ = detail_and_routes(client, first["id"])

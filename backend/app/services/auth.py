@@ -18,6 +18,7 @@ PASSWORDS = PasswordHash.recommended()
 DUMMY_HASH = PASSWORDS.hash(secrets.token_urlsafe(24))
 ROLES = {"customer", "admin"}
 COOKIE_NAME = "resolveai_session"
+USERNAME_CHARACTERS = r"a-z0-9\u3400-\u4dbf\u4e00-\u9fff\U00020000-\U0002fa1f"
 
 
 @dataclass(frozen=True)
@@ -50,8 +51,8 @@ def require_role(*roles):
 
 def normalize_username(value):
     result = value.strip().lower()
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{1,79}", result):
-        raise HTTPException(422, "用户名请使用2～80位英文、数字、点、横线或下划线")
+    if not re.fullmatch(rf"[{USERNAME_CHARACTERS}][{USERNAME_CHARACTERS}_.-]{{1,79}}", result):
+        raise HTTPException(422, "用户名请使用2～80个中文、英文字母、数字、点、横线或下划线，且以中文、字母或数字开头")
     return result
 
 

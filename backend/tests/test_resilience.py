@@ -90,7 +90,10 @@ def test_rag_without_reliable_evidence_refuses_to_invent_and_escalates(monkeypat
         assert analyzed.status_code == 200, analyzed.text
         detail = analyzed.json()
         assert detail["status"] == "pending_approval"
-        assert "没有找到足够可靠" in detail["draft_response"]
+        assert "还需要进一步核实" in detail["draft_response"]
+        assert "人工客服" in detail["draft_response"]
+        assert "知识库" not in detail["draft_response"]
+        assert detail["assessment"]["resolution"]["safe_refusal"] is True
         assert detail["assessment"]["resilience"]["rag"]["reliable"] is False
         assert detail["assessment"]["resilience"]["failure_count"] >= 1
         assert any(

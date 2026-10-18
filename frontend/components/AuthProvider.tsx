@@ -3,6 +3,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { api, type SessionUser } from "@/lib/api";
+import { PasswordDialog } from "@/components/PasswordDialog";
 
 const Context = createContext<{ user: SessionUser | null; setUser: (user: SessionUser | null) => void; loading: boolean }>({ user: null, setUser: () => {}, loading: true });
 export const useAuth = () => useContext(Context);
@@ -36,11 +37,8 @@ export function SessionActions() {
   const { user, setUser } = useAuth();
   const router = useRouter();
   const [changing, setChanging] = useState(false);
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [error, setError] = useState("");
   if (!user) return null;
-  return <div className="session-actions"><span>{user.display_name} · {roleLabels[user.role]}</span><button type="button" onClick={() => setChanging(!changing)}>修改密码</button><button type="button" onClick={async () => { await api.logout(); setUser(null); router.replace("/login"); }}>退出登录</button>
-    {changing && <form className="password-dialog panel" onSubmit={async (event) => { event.preventDefault(); setError(""); try { setUser(await api.changePassword(currentPassword, newPassword)); setCurrentPassword(""); setNewPassword(""); setChanging(false); } catch (e) { setError((e as Error).message); } }}><h3>修改密码</h3><label>当前密码<input required type="password" autoComplete="current-password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} /></label><label>新密码<input required minLength={12} maxLength={128} type="password" autoComplete="new-password" value={newPassword} onChange={e => setNewPassword(e.target.value)} /></label>{error && <p role="alert">{error}</p>}<button type="submit">保存并注销其他登录</button><button type="button" onClick={() => setChanging(false)}>取消</button></form>}
+  return <div className="session-actions"><span>{user.display_name} · {roleLabels[user.role]}</span><button type="button" onClick={() => setChanging(true)}>修改密码</button><button type="button" onClick={async () => { await api.logout(); setUser(null); router.replace("/login"); }}>退出登录</button>
+    {changing && <PasswordDialog onClose={() => setChanging(false)} onSaved={setUser} />}
   </div>;
 }

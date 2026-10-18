@@ -31,8 +31,8 @@ export function LoginForm() {
       router.replace(user.role === "customer" ? "/customer" : staffTarget);
     } catch (reason) { setError((reason as Error).message); } finally { setPending(false); }
   }
-  return <div className="login-page"><form className="login-card" onSubmit={submit}><h1>ResolveAI</h1><h2>{registering ? "注册用户账号" : "登录您的账号"}</h2><p>客户、客服与审批操作均按账号权限隔离。</p>
-    <label>用户名<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required minLength={2} maxLength={80} placeholder="英文或数字用户名" /></label>
+  return <div className="login-page"><form className="login-card" onSubmit={submit}><h1>ResolveAI</h1><h2>{registering ? "注册用户账号" : "登录您的账号"}</h2><p>客户与管理员按账号权限隔离。</p>
+    <label>用户名<input value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" required minLength={2} maxLength={80} placeholder="中文、英文或数字用户名" /></label>
     {registering && <label>您的称呼<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={100} /></label>}
     <label>密码<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={registering ? "new-password" : "current-password"} required maxLength={128} /></label>
     {error && <div role="alert" className="customer-error">{error}</div>}

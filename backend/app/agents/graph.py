@@ -9,12 +9,17 @@ from app.agents.state import SupportState
 from app.core.config import get_settings
 from app.core.observability import traced_agent_node
 from app.services.commerce import CommerceGateway
+from app.services.customer_reply import direct_faq_reply, human_handoff_reply
 from app.services.llm import LLMService
 from app.services.retrieval import RetrievalService
 from app.services.reply_validation import check_draft_facts, requests_money_operation
 from app.services.retrieval_query import build_retrieval_query
 from app.services.security import SecurityService, redact_conversation, redact_text
-from app.services.shop_assistant import catalog_details_reply, needs_order_context, promotion_faq_citation, promotion_information_reply, service_scope_reply, unavailable_catalog_plan_reply
+from app.services.shop_assistant import campaign_title_faq, catalog_availability_reply, catalog_details_reply, needs_order_context, promotion_faq_citation, promotion_information_reply, service_scope_reply, unavailable_catalog_plan_reply
+from app.services.promotion_intent import promotion_context
+from app.schemas import Citation
+from app.services.manual_faq import canonical_manual_faq, match_manual_faq, refresh_manual_faq_citations
+from app.services.business_questions import is_guidance_question
 
 
 def _event(
@@ -135,6 +140,40 @@ def build_support_graph(
         citations, rag_status = retrieval.search_reliable(
             query, limit=settings.rag_max_documents
         )
+        manual_faq = None
+        if ticket.get("channel") == "web" and not state.get("security", {}).get("blocked"):
+            with Session(bind=session.bind) as read_session:
+                refreshed = refresh_manual_faq_citations(read_session, ticket.get("workspace_id", "default"),
+                                                         [item.model_dump() for item in citations])
+            if len(refreshed) != len(citations):
+                reliable = bool(refreshed) and rag_status["reliable"]
+                rag_status = {**rag_status, "reliable": reliable, "reliable_count": len(refreshed),
+                              "failure_reason": None if reliable else "手动 FAQ 已停用、不在当前空间或未通过安全检查"}
+            citations = [Citation.model_validate(item) for item in refreshed]
+            latest = ticket.get("message", "")
+            customers = [item.get("content", "") for item in state.get("conversation", []) if item.get("role") == "customer"]
+            previous = customers[:-1] if customers and customers[-1] == latest else customers
+            campaign_query = promotion_context(latest, previous)
+            if campaign_query:
+                with Session(bind=session.bind) as read_session:
+                    faq = campaign_title_faq(read_session, ticket.get("workspace_id", "default"), campaign_query)
+                if faq:
+                    citations = [Citation.model_validate(faq)]
+                    rag_status = {**rag_status, "reliable": True, "reliable_count": 1,
+                                  "match_method": "configured_campaign_title", "matched_document_id": faq["id"],
+                                  "semantic_reliable": rag_status["reliable"], "semantic_top_score": rag_status["top_score"],
+                                  "failure_reason": None}
+            if not campaign_query:
+                with Session(bind=session.bind) as read_session:
+                    manual_faq = match_manual_faq(read_session, ticket.get("workspace_id", "default"), latest,
+                                                  [item.model_dump() for item in citations], rag_status)
+                if manual_faq:
+                    citation = manual_faq["citation"]
+                    citations = [Citation.model_validate(citation)]
+                    rag_status = {**rag_status, "reliable": True, "reliable_count": 1,
+                                  "match_method": manual_faq["match_method"], "matched_document_id": citation["id"],
+                                  "semantic_reliable": rag_status["reliable"], "semantic_top_score": rag_status.get("top_score"),
+                                  "failure_reason": None}
         failures = []
         if not rag_status["reliable"]:
             failures.append(
@@ -148,11 +187,13 @@ def build_support_graph(
         return {
             "citations": [item.model_dump() for item in citations],
             "rag_status": rag_status,
+            "manual_faq": manual_faq,
             "failures": failures,
             "audit": [
                 _event(
                     "知识检索 Agent",
-                    "RAG 向量检索",
+                    ("匹配商户活动 FAQ 标题" if rag_status.get("match_method") == "configured_campaign_title" else
+                     "匹配商户手动 FAQ" if manual_faq else "RAG 向量检索"),
                     (
                         f"从知识库召回 {len(citations)} 条可靠政策依据"
                         if citations
@@ -263,13 +304,24 @@ def build_support_graph(
         failures = []
         response_citations = state.get("citations", [])
         security_assessment = state.get("security", {})
+        response_context = state["customer_context"]
+        faq = None
+        faq_unavailable = False
+        selected = state.get("manual_faq")
+        if selected and not state["policy"].get("must_review"):
+            live_route = response_context.get("assistant_route") in {"catalog", "logistics"}
+            if not live_route or is_guidance_question(state["ticket"].get("message", "")):
+                with Session(bind=session.bind) as read_session:
+                    faq = canonical_manual_faq(read_session, state["ticket"].get("workspace_id", "default"),
+                                               selected["citation"]["id"], score=selected["citation"]["score"])
+                faq_unavailable = faq is None
         if security_assessment.get("blocked"):
             resolution = {
                 "recommended_action": "转人工安全复核",
                 "rationale": "请求涉及越权、指令注入或敏感账号操作，自动流程不得执行。",
                 "draft_response": (
-                    f"您好，{state['ticket']['customer_name']}。您的请求涉及需要额外安全核验的操作，"
-                    "为保护您的账号和资金安全，系统不会自动执行，已转交人工客服复核。"
+                    f"您好，{state['ticket']['customer_name']}。为保障您的账号和资金安全，"
+                    "这项操作需要人工客服核验，已为您转接。您可以继续在这里补充情况。"
                 ),
                 "refund_amount": None,
                 "requires_approval": True,
@@ -287,6 +339,25 @@ def build_support_graph(
                 "errors": [],
                 "security_reasons": security_assessment.get("reasons", []),
             }
+        elif faq:
+            response_citations = [faq]
+            response_context = {**response_context, "assistant_route": "faq", "faq_document_id": faq["id"]}
+            resolution = {"recommended_action": "使用已启用的手动 FAQ 回答咨询",
+                          "rationale": f"依据当前商户 FAQ：{faq['title']}（{faq['source']}）；仅说明操作方法或规则，不查询或修改客户业务记录。",
+                          "draft_response": direct_faq_reply(faq["snippet"]), "requires_approval": False,
+                          "confidence": faq["score"], "refund_amount": None}
+            model_metadata = {"provider": "manual_faq_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": [],
+                              "knowledge_source_id": faq["id"], "knowledge_source": faq["source"],
+                              "match_method": selected["match_method"]}
+        elif faq_unavailable:
+            response_citations = []
+            resolution = {"recommended_action": "说明信息暂不可确认并继续协助",
+                          "rationale": "匹配的 FAQ 在发送前已停用或不可访问，不得使用旧答案。",
+                          "draft_response": "您好，这项信息暂时还无法确认。您可以补充具体想了解的内容，我再为您提供帮助。",
+                          "requires_approval": False, "confidence": 0, "refund_amount": None, "needs_clarification": True}
+            model_metadata = {"provider": "faq_information_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
         elif state["customer_context"].get("assistant_route") == "service_scope":
             resolution = service_scope_reply(state["ticket"], state["policy"]).model_dump()
             model_metadata = {"provider": "service_scope_guard", "model": "deterministic-policy", "skipped": True,
@@ -294,7 +365,8 @@ def build_support_graph(
         elif state["customer_context"].get("assistant_route") == "promotions":
             with Session(bind=session.bind) as read_session:
                 faq = promotion_faq_citation(read_session, state["ticket"].get("workspace_id", "default"),
-                                             response_citations, state.get("rag_status", {}))
+                                             response_citations, state.get("rag_status", {}),
+                                             state["customer_context"].get("promotion_query", state["ticket"].get("message", "")))
             resolution = promotion_information_reply(state["policy"], faq).model_dump()
             response_citations = [faq] if faq else []
             model_metadata = {"provider": "promotion_faq_guard" if faq else "promotion_information_guard",
@@ -307,6 +379,11 @@ def build_support_graph(
               and not state["customer_context"].get("availability_plan_available")):
             resolution = unavailable_catalog_plan_reply(state["customer_context"], state["policy"]).model_dump()
             model_metadata = {"provider": "catalog_information_guard", "model": "deterministic-policy", "skipped": True,
+                              "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
+        elif (state["customer_context"].get("assistant_route") == "catalog"
+              and state["customer_context"].get("catalog_intent") == "availability"):
+            resolution = catalog_availability_reply(state["customer_context"], state["policy"]).model_dump()
+            model_metadata = {"provider": "catalog_availability_guard", "model": "deterministic-policy", "skipped": True,
                               "fallback": False, "attempts": 0, "retry_count": 0, "errors": []}
         elif (state["customer_context"].get("assistant_route") == "catalog"
               and state["customer_context"].get("catalog_intent") == "details"):
@@ -325,7 +402,7 @@ def build_support_graph(
                                  "reason": model_metadata.get("failure_reason"), "retry_count": model_metadata.get("retry_count", 0)})
         elif state["policy"].get("handoff_reasons"):
             resolution = {"recommended_action": "转人工客服处理", "rationale": "；".join(state["policy"]["handoff_reasons"]),
-                          "draft_response": "您好，您的请求已记录，需要人工客服继续处理。本轮未执行退款或其他资金操作，您可以在此对话补充信息。",
+                          "draft_response": human_handoff_reply(state["policy"]["handoff_reasons"]),
                           "requires_approval": True, "confidence": 1.0, "refund_amount": (
                               (state["ticket"].get("amount") or state["customer_context"].get("order_amount"))
                               if state["policy"].get("financial_action_requested") and state["customer_context"].get("paid")
@@ -341,7 +418,7 @@ def build_support_graph(
                 "draft_response": (
                     "您好，我们已收到您反馈的问题。为了准确核查，请您提供订单编号；"
                     "如暂时找不到，可在订单列表查看后回复此对话。请勿发送密码、验证码或完整银行卡号。"
-                    "收到必要信息后，我们会继续核实并为您提供处理建议；当前尚未执行退款或补发。"
+                    "收到订单编号后，我再帮您查看具体情况。"
                 ),
                 "refund_amount": None,
                 "requires_approval": bool(state["policy"].get("must_review")),
@@ -357,8 +434,8 @@ def build_support_graph(
                 "recommended_action": "转人工客服补充核验",
                 "rationale": "知识库没有达到可靠性阈值的依据，系统拒绝生成无依据结论。",
                 "draft_response": (
-                    f"您好，{state['ticket']['customer_name']}。当前知识库中没有找到足够可靠的"
-                    "处理依据，为避免向您提供不准确的信息，我们已将问题转交人工客服进一步核验。"
+                    f"您好，{state['ticket']['customer_name']}。这个问题还需要进一步核实，"
+                    "已为您转接人工客服。您可以继续在这里补充情况，无需重复提交。"
                 ),
                 "refund_amount": None,
                 "requires_approval": True,
@@ -408,6 +485,7 @@ def build_support_graph(
                 )
         return {
             "resolution": resolution,
+            "customer_context": response_context,
             "citations": response_citations,
             "generation_attempt": attempt,
             "model_trace": [{"stage": "resolution", **model_metadata}],
@@ -439,13 +517,20 @@ def build_support_graph(
             and item.get("snippet")
             for item in citations
         )
+        # A configured, verified FAQ can be a complete answer even below 20 characters.
+        # This exemption is not available to arbitrary short model-generated drafts.
+        verified_faq_answer = (
+            state.get("customer_context", {}).get("assistant_route") in {"promotions", "faq"}
+            and citations_valid and len(citations) == 1
+            and resolution.get("draft_response") == direct_faq_reply(citations[0]["snippet"])
+        )
         checks = {
             "has_policy_citation": citations_valid
             or state.get("customer_context", {}).get("assistant_route") in {"catalog", "logistics", "service_scope", "promotions"}
             or bool(resolution.get("safe_refusal") or resolution.get("needs_clarification")
                     or resolution.get("security_blocked")),
             "has_clear_action": bool(resolution.get("recommended_action")),
-            "has_customer_response": len(resolution.get("draft_response", "")) >= 20,
+            "has_customer_response": verified_faq_answer or len(resolution.get("draft_response", "")) >= 20,
             "approval_rule_respected": (
                 not state["policy"].get("must_review") or resolution.get("requires_approval")
             ),
@@ -480,7 +565,7 @@ def build_support_graph(
                 "recommended_action": f"转人工复核：{resolution.get('recommended_action', '')}",
                 "rationale": "回复经过有限次数重生成后仍未通过质量检查，必须转人工复核。",
                 "requires_approval": True,
-                "draft_response": safe_review_reply(),
+                "draft_response": safe_review_reply(state["ticket"]),
                 "refund_amount": None,
             }
         return {

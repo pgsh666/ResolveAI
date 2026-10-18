@@ -1,9 +1,21 @@
 """Business-language query expansion; never uses evaluation labels or case identifiers."""
 
 import re
+from app.services.promotion_intent import promotion_context
+from app.services.business_questions import is_guidance_question
 
 
 def build_retrieval_query(ticket: dict, conversation: list[dict]) -> str:
+    if ticket.get("channel") == "web":
+        latest = ticket.get("message", "")
+        messages = [str(item.get("content", "")) for item in conversation if item.get("role") == "customer"]
+        previous = messages[:-1] if messages and messages[-1] == latest else messages
+        promotion_query = promotion_context(latest, previous)
+        if promotion_query:
+            # Latest campaign takes precedence over a stale chat title or older topics.
+            return promotion_query
+        if is_guidance_question(latest):
+            return latest  # Generic instructions are not a query for an old order/subject.
     labels = {
         "refund": "退款售后", "logistics": "物流问题", "payment": "支付问题",
         "product": "商品问题", "account": "账号问题",

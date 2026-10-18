@@ -64,7 +64,7 @@ def test_migration_adopts_legacy_data_and_is_repeatable(tmp_path):
     migrate_database(engine)
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT message FROM tickets WHERE id='keep'")) == "原始消息"
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0003"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
         assert connection.scalar(text("SELECT ticket_no FROM tickets WHERE id='keep'")) == "26-10-14-1"
         assert connection.scalar(text("SELECT legacy_ticket_no FROM tickets WHERE id='keep'")) == "TKT-KEEP"
         assert connection.scalar(text("SELECT count(*) FROM accounts")) == 0

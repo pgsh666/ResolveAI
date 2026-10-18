@@ -194,7 +194,11 @@ def test_question_api_counts_include_failed_model_attempts_without_paid_calls(mo
         t = question(client, "商城有没有蓝牙耳机？")
         row = next(r for r in client.get("/api/v1/questions/routes").json() if r["ticket_id"] == t["id"])
         assert row["outcome"] == "replied"
-        assert row["model_requests"] == 3 and row["api_requests"] == 3 and row["tool_requests"] == 0
+        # Stock facts are now rendered directly; only the two triage attempts call a model.
+        assert row["model_requests"] == 2 and row["api_requests"] == 2 and row["tool_requests"] == 0
+        detail = client.get(f"/api/v1/tickets/{t['id']}").json()
+        resolution = next(item for item in detail["assessment"]["model_trace"] if item["stage"] == "resolution")
+        assert resolution["provider"] == "catalog_availability_guard" and resolution["skipped"]
 
 
 def test_concurrent_followups_do_not_overwrite_dialogue(monkeypatch):

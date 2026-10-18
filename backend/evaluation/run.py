@@ -128,8 +128,10 @@ def _expected_outcome_matches(case: EvaluationCase, ticket, assessment: dict) ->
     rag = resilience.get("rag") or {}
     return (
         ticket.status == "pending_approval"
+        and ticket.requires_approval
         and rag.get("reliable") is False
-        and "没有找到足够可靠" in (ticket.draft_response or "")
+        and (assessment.get("resolution") or {}).get("safe_refusal") is True
+        and bool(ticket.draft_response)
     )
 
 

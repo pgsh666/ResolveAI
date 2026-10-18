@@ -3,10 +3,14 @@ import re
 from sqlalchemy import select
 from app.models import Product, StoreOrder
 from app.services.store import STATUS_LABELS, shipping_days
+from app.services.promotion_intent import campaign_names, normalize_campaign_names, promotion_context
+from app.services.business_questions import is_guidance_question
 
 PRODUCT_DETAIL_WORDS = re.compile(
     r"是(?:什么|啥)|(?:什么|啥)(?:东西|商品|产品)|介绍|说说|讲讲|解释|详情|详细|具体|"
     r"长什么样|什么样|干嘛|干啥|干什么用|做什么用|有啥用|有什么用|用途|材质|成分|配料|型号|尺寸|规格|功能|怎么用|如何用|使用方法|区别")
+PRODUCT_AVAILABILITY_WORDS = re.compile(
+    r"还有|有没有|有货|现货|库存|售罄|卖完|缺货|没货|还剩|剩余|余量|买得到|买到吗|能(?:买|购买)|有.{0,40}(?:吗|(?<!什)么)[？?！!。\s]*$|卖.{0,30}吗")
 
 
 def shop_context(session, ticket, conversation):
@@ -15,19 +19,10 @@ def shop_context(session, ticket, conversation):
     workspace = ticket.get("workspace_id", "default")
     owner = ticket.get("owner_id")
     latest = ticket.get("message", "")
-    promotion_pattern = (
-        r"优惠券|折扣券|代金券|满减券|领券|用券|有(?:什么|哪些|可用|能用的)?券|券码|优惠码|优惠|折扣|打折|满减|促销|活动价|特价|"
-        r"(?:商城|店铺|店里|你们|你家|咱们).{0,6}活动|^(?:现在|今天|最近)?有(?:什么|哪些|啥)?活动[吗么嘛？?\s]*$")
-    promotion_request = bool(re.search(promotion_pattern, latest))
     customer_messages = [m.get("content", "") for m in conversation if m.get("role") == "customer"]
     previous = customer_messages[:-1] if customer_messages and customer_messages[-1] == latest else customer_messages
-    if not promotion_request and re.search(r"怎么[领用]|哪里领|在哪[领用]|如何[领用]|使用条件|有效期|满多少|叠加|能领吗", latest):
-        # Only inherit the immediately preceding promotion question, not a stale
-        # promotion topic across an intervening product/order conversation.
-        promotion_request = bool(previous and re.search(promotion_pattern, previous[-1]))
-    # Refunds and concrete after-sales issues retain their existing support path.
-    promotion_request = promotion_request and not bool(re.search(
-        r"退款|退货|退钱|退换|售后|损坏|破损|坏了|缺件|错发|投诉|维修", latest))
+    promotion_query = promotion_context(latest, previous)
+    promotion_request = promotion_query is not None
     products = session.scalars(select(Product).where(Product.workspace_id == workspace, Product.active.is_(True)).order_by(Product.price_cents, Product.id)).all()
     def matches_query(product, text):
         name = product.name.lower()
@@ -38,18 +33,20 @@ def shop_context(session, ticket, conversation):
         return name in query or any(token in query for token in tokens) or any(pair in query for pair in pairs)
     def product_nouns(text):
         return [word for word in ["耳机", "鼠标", "键盘", "杯子", "衣服", "电脑", "手机", "书包", "水杯"] if word in text]
-    shopping_words = r"在售|有卖|想买|购买|库存|商城|哪款|哪些商品"
+    shopping_words = r"在售|有卖|想买|购买|库存|商城|哪款|哪些商品|推荐|选购|挑选"
     other_business = promotion_request or bool(re.search(r"退款|退货|退钱|退换|售后|损坏|破损|坏了|缺件|错发|投诉|维修|转人工|人工客服|物流|配送|发货|快递|签收|订单|支付|付款|扣款|账号|密码|登录|会员|政策|规则", latest))
     explicit_product = bool(product_nouns(latest) or any(matches_query(p, latest) for p in products))
     scope_shift = not explicit_product and bool(re.search(r"Python|编程|作文|写作|旅游|学习计划|生活规划", latest, re.I))
     followup = not other_business and not scope_shift and bool(re.search(
-        r"这[个款两些]|那[个款两些]|第[一二三四五六七八九十\d]|上面|刚才|便宜|价格|多少钱|有货|库存|还有|别的|其他|上架|上新|补货|新的|新款|再.{0,4}推荐|哪个|它|怎么样|怎么用|参数|规格|功能", latest)
+        r"这[个款两些]|那[个款两些]|第[一二三四五六七八九十\d]|上面|刚才|便宜|价格|多少钱|有货|库存|还有|还剩|剩余|余量|别的|其他|上架|上新|补货|新的|新款|再.{0,4}推荐|哪个|它|怎么样|怎么用|参数|规格|功能", latest)
         or PRODUCT_DETAIL_WORDS.search(latest))
     detail_request = bool(PRODUCT_DETAIL_WORDS.search(latest))
     plan_request = not other_business and not scope_shift and bool(
         (re.search(r"上架|上新|补货|进货|开售", latest) or
          re.search(r"(?:有|出|卖|发布).{0,3}(?:新款|新品|新的)|(?:新款|新品|新的).{0,8}(?:什么时候有|何时有|什么时候卖)", latest)) and
         re.search(r"什么时候|何时|多久|啥时候|几[点天日]|时间|计划|预计|安排|明天|后天|下周|下个月|会不会", latest))
+    comparison_request = bool(re.search(r"便宜|对比|比较|推荐|别的|其他|别款|替代", latest))
+    availability_request = not (detail_request or plan_request or comparison_request) and bool(PRODUCT_AVAILABILITY_WORDS.search(latest))
     route_text = latest
     inherited_topic = False
     # Pick the nearest customer-stated topic, rather than merging every earlier
@@ -63,11 +60,11 @@ def shop_context(session, ticket, conversation):
                 route_text = f"{message} {latest}"
                 inherited_topic = True
                 break
-    catalog_request = bool(re.search(shopping_words, route_text)) or plan_request or inherited_topic
+    catalog_request = bool(re.search(shopping_words, route_text)) or plan_request or inherited_topic or availability_request
     matches = [p for p in products if matches_query(p, route_text)]
     exact_matches = [p for p in products if p.name.lower() in route_text.lower()]
     nouns = product_nouns(route_text)
-    if detail_request and exact_matches:
+    if (detail_request or availability_request) and exact_matches:
         # Merchant-defined names need no hard-coded category noun or search verb.
         matches = exact_matches
     elif nouns:
@@ -77,12 +74,16 @@ def shop_context(session, ticket, conversation):
         catalog_request = True
     if (matches or nouns) and re.search(r"找|挑|搜|看看|看一下|看下|有没有|有货|推荐|对比|比较|价格|多少钱|便宜|买|选|功能|参数|规格", route_text):
         catalog_request = True
-    if not matches and not nouns and catalog_request and re.search(r"哪些|推荐|商城|所有|对比|比较|便宜", route_text):
-        matches = products[:20]
+    if not matches and not nouns and not availability_request and catalog_request and re.search(r"哪些|推荐|商城|所有|对比|比较|便宜", route_text):
+        matches = products
     if matches and re.search(r"买|选|怎么用|如何用|参数|功能|规格|适合", latest) and not re.search(r"退款|退货|物流|订单", latest):
         catalog_request = True
     if other_business or scope_shift:
         catalog_request = False
+    recommendation_request = not (detail_request or availability_request or plan_request) and bool(
+        re.search(r"推荐|挑选|帮我选|帮我挑|有哪些|有什么|都有什么|所有商品|哪些商品", route_text))
+    if recommendation_request:
+        matches = [p for p in matches if p.stock > 0]
     base = {"customer_name": ticket["customer_name"], "customer_level": ticket.get("customer_tier", "standard"),
             "order_id": ticket.get("order_id"), "order_status": "unknown", "order_amount": None, "paid": False,
             "context_available": False, "risk_flags": [], "tool_source": "shop_database", "tool_attempts": 0,
@@ -90,11 +91,12 @@ def shop_context(session, ticket, conversation):
             "catalog": [{"id": p.id, "name": p.name, "description": p.description[:500], "category": p.category, "price": p.price_cents / 100,
                          "stock": p.stock} for p in matches[:20]], "catalog_query": route_text[-1500:],
             "catalog_topic": "、".join(nouns) if nouns else (matches[0].name if len(matches) == 1 else "相关商品"),
-            "catalog_intent": "availability_plan" if plan_request else "details" if detail_request else "search",
+            "catalog_intent": "availability_plan" if plan_request else "details" if detail_request else "availability" if availability_request else "search",
             "catalog_detail_question": latest if detail_request else "",
             "availability_plan_available": False}
     if promotion_request and not scope_shift:
         base["assistant_route"] = "promotions"
+        base["promotion_query"] = promotion_query
         # Product prices and historical compensation tools do not prove there is
         # a customer-claimable coupon or an active promotional campaign.
         base["promotion_data_available"] = False
@@ -129,6 +131,8 @@ def shop_context(session, ticket, conversation):
 
 def needs_order_context(ticket):
     text = ticket.get("message", "")
+    if is_guidance_question(text):
+        return False
     if re.search(r"政策|规则|条件|规定|FAQ|营业|上班|客服.{0,4}(时间|几点)", text):
         return False
     return ticket.get("category") in {"logistics", "refund", "payment"} or bool(re.search(r"订单|损坏|缺件|错发|補发|补发|收到.{0,6}商品", text))
@@ -138,7 +142,7 @@ def handoff_reasons(ticket, conversation, context):
     from app.services.reply_validation import requests_money_operation
     latest = ticket.get("message", "")
     reasons = []
-    if requests_money_operation(ticket) or (re.search(r"退款|退货|退钱", latest) and not re.search(r"政策|条件|规定|是否支持|规则|限制", latest)):
+    if requests_money_operation(ticket) or (re.search(r"退款|退货|退钱", latest) and not re.search(r"政策|条件|规定|是否支持|规则|限制", latest) and not is_guidance_question(latest)):
         reasons.append("退款或资金操作需人工处理")
     # A payment dispute can be high risk without the literal word 'refund'.
     # Claimed amounts are used only to escalate, never to authorize a payout.
@@ -179,10 +183,33 @@ def unavailable_catalog_plan_reply(context, policy):
     """The current product schema has no launch/restock schedule; never invent one."""
     from app.schemas import ResolutionResult
     topic = context.get("catalog_topic", "相关商品")
-    reply = (f"您好，目前商城没有记录{topic}的上新或补货计划，暂时无法确认具体时间。"
+    reply = (f"您好，关于{topic}的上新或补货，暂时无法确认具体时间。"
              "您可以后续查看商城的上新情况，也可以告诉我您的预算和需求，我帮您查找当前在售的其他商品。")
     return ResolutionResult(recommended_action="说明上新或补货时间未知，继续协助选购",
                             rationale="系统无上新/补货计划记录，不猜测时间，也不因普通信息未知转人工",
+                            draft_response=reply, requires_approval=bool(policy.get("must_review")), confidence=1)
+
+
+def catalog_availability_reply(context, policy):
+    """Report stock facts for active products; zero stock is not a missing record."""
+    from app.schemas import ResolutionResult
+    items = context.get("catalog", [])
+    if len(items) == 1:
+        item = items[0]
+        if item["stock"] > 0:
+            reply = (f"您好，“{item['name']}”目前有货，库存 {item['stock']} 件，售价 {item['price']:.2f} 元。"
+                     "您可以在商城查看商品详情后下单，实际可购买数量以下单时的库存为准。")
+        else:
+            reply = (f"您好，“{item['name']}”目前已售罄，库存 0 件，暂时无法下单。"
+                     "您也可以告诉我您的用途或预算，我帮您看看其他有货的商品。")
+    elif items:
+        rows = [f"{item['name']}：{item['price']:.2f} 元，" + (f"有货，库存 {item['stock']} 件" if item["stock"] > 0 else "已售罄，暂时无法下单")
+                for item in items[:20]]
+        reply = "您好，查询到以下商品的当前库存：\n" + "\n".join(rows) + "\n您想进一步了解哪一款？"
+    else:
+        reply = "您好，当前商城没有查到您说的商品。请告诉我具体的商品名称或规格，我再帮您确认；暂时查不到不代表已经售罄。"
+    return ResolutionResult(recommended_action="查询商品当前库存并说明是否可购买",
+                            rationale="依据同一商户已上架商品的当前库存回答；零库存仍可查询，不推测补货时间，不执行下单。",
                             draft_response=reply, requires_approval=bool(policy.get("must_review")), confidence=1)
 
 
@@ -224,7 +251,39 @@ def catalog_details_reply(context, policy):
                             draft_response=reply, requires_approval=bool(policy.get("must_review")), confidence=1)
 
 
-def promotion_faq_citation(session, workspace_id, citations, rag_status):
+def campaign_title_faq(session, workspace_id, question):
+    """An explicitly configured campaign FAQ is authoritative without a vector score.
+
+    Match only unambiguous standard campaign titles, not arbitrary shared words.
+    Keep this separate from semantic retrieval confidence and recheck canonical data.
+    """
+    from app.models import KnowledgeDocument
+    from app.services.auth import knowledge_scope
+
+    names = campaign_names(question)
+    if len(names) > 1:
+        return None
+    if names:
+        name = names[0]
+        titles = {name, f"{name}活动", f"{name}大促", f"{name}促销活动"}
+    else:
+        # Custom store campaigns need no hard-coded holiday name, but must match exactly.
+        titles = {re.sub(r"[\s，,。！？!?：:]+", "", normalize_campaign_names(question))}
+    matches = []
+    for document in session.scalars(select(KnowledgeDocument).where(
+            KnowledgeDocument.enabled.is_(True), KnowledgeDocument.source.like("faq://manual/%"),
+            knowledge_scope(workspace_id))):
+        title = re.sub(r"[\s，,。！？!?：:]+", "", normalize_campaign_names(document.title))
+        if title in titles:
+            matches.append(document)
+    if len(matches) != 1:
+        return None  # Ambiguous titles receive no deterministic match.
+    document = matches[0]
+    return promotion_faq_citation(session, workspace_id, [{"id": document.id, "score": 1.0}],
+                                  {"reliable": True, "threshold": 1.0}, question)
+
+
+def promotion_faq_citation(session, workspace_id, citations, rag_status, question=""):
     """Use a reliable, enabled, in-scope promotion FAQ, never an unrelated coupon mention."""
     from app.core.config import get_settings
     from app.models import KnowledgeDocument
@@ -234,6 +293,7 @@ def promotion_faq_citation(session, workspace_id, citations, rag_status):
     if not rag_status.get("reliable"):
         return None
     threshold = rag_status.get("threshold", get_settings().rag_min_score)
+    requested_campaigns = set(campaign_names(question))
     for citation in sorted(citations, key=lambda item: item.get("score", 0), reverse=True):
         if citation.get("score", 0) < threshold:
             continue
@@ -243,10 +303,12 @@ def promotion_faq_citation(session, workspace_id, citations, rag_status):
             knowledge_scope(workspace_id)))
         if not document or not document.content.strip():
             continue
+        if requested_campaigns and not requested_campaigns.intersection(campaign_names(document.title + "\n" + document.content)):
+            continue  # A different campaign or a generic coupon FAQ is not this event's answer.
         topic_text = document.title
         if document.source.startswith("faq://"):
             topic_text += "\n" + document.content
-        if not re.search(r"优惠|折扣|代金券|满减|促销|活动|领券", topic_text):
+        if not re.search(r"优惠|折扣|代金券|满减|促销|活动|领券", topic_text) and not campaign_names(topic_text):
             continue
         if re.search(r"退款|退货|售后|物流|延误|赔付|补偿|关怀", document.title):
             continue  # A compensation SOP is not a general claimable-coupon offer.
@@ -261,14 +323,13 @@ def promotion_information_reply(policy, faq=None):
     """Prefer a verified knowledge answer; only use 'unknown' when there is no usable FAQ."""
     from app.schemas import ResolutionResult
     if faq:
-        reply = (f"您好，商家知识库《{faq['title']}》中的说明是：\n{faq['snippet']}\n"
-                 "以上为商家公布的优惠说明，本轮未执行领券或发券操作。")
+        from app.services.customer_reply import direct_faq_reply
+        reply = direct_faq_reply(faq["snippet"])
         return ResolutionResult(recommended_action="依据商家优惠知识回复咨询",
                                 rationale=f"采用已启用且达到检索阈值的知识文档：{faq['title']}（{faq['source']}）；仅说明规则，不执行发券",
                                 draft_response=reply, requires_approval=bool(policy.get("must_review")),
                                 confidence=faq["score"])
-    reply = ("您好，优惠券和促销活动属于商城咨询范围。"
-             "目前暂时无法查询到可领取优惠券、促销活动及使用规则的可靠信息，不能确认是否有可用优惠。"
+    reply = ("您好，目前暂时无法确认有哪些可领取的优惠券或促销活动。"
              "商品价格请以商城当前显示为准。您可以告诉我想购买的商品和预算，我可以帮您查询售价、库存或比较价格。")
     return ResolutionResult(recommended_action="说明优惠信息暂不可核实，继续协助选购",
                             rationale="当前未接入可领取优惠券或促销活动数据，不推断无优惠，不编造金额、规则或领取入口，不执行发券",
@@ -287,6 +348,8 @@ def demo_shop_reply(ticket, context, policy):
             return unavailable_catalog_plan_reply(context, policy)
         if context.get("catalog_intent") == "details":
             return catalog_details_reply(context, policy)
+        if context.get("catalog_intent") == "availability":
+            return catalog_availability_reply(context, policy)
         items = context.get("catalog", [])
         if items:
             rows = [f"{p['name']}：{p['price']:.2f} 元，库存 {p['stock']} 件。{p['description']}" for p in items[:5]]
@@ -295,7 +358,7 @@ def demo_shop_reply(ticket, context, policy):
                 available = [p for p in items if p["stock"] > 0]
                 if available:
                     cheap = min(available, key=lambda p: p["price"])
-                    reply += f"\n其中有库存的最低价商品是 {cheap['name']}，价格为 {cheap['price']:.2f} 元。您可以结合描述与需求选择，并在商城查看后模拟下单。"
+                    reply += f"\n其中有库存的最低价商品是 {cheap['name']}，价格为 {cheap['price']:.2f} 元。您可以结合描述与需求选择，并在商城查看后下单。"
         else:
             reply = "您好，当前商城没有找到与您描述匹配的在售商品。您可以告诉我更具体的商品名称、用途或规格，我再帮您查询；未上架的商品不能直接购买。"
         return ResolutionResult(recommended_action="查询在售商品与比较价格", rationale="依据商城数据库的在售商品、价格和库存回答", draft_response=reply,
@@ -303,11 +366,11 @@ def demo_shop_reply(ticket, context, policy):
     if route == "logistics":
         reply = f"您好，订单 {context['order_id']} 的当前状态为{context['order_status_label']}。"
         if context["order_status"] == "in_transit":
-            reply += f"模拟运输已进行 {context['transit_days']} 天，订单记录的预计运输时间为 {context['expected_delivery_days']} 天。"
+            reply += f"包裹已运输 {context['transit_days']} 天，预计运输时间为 {context['expected_delivery_days']} 天。"
         if context.get("overdue"):
             reply += "运输时间已超过订单预计送达天数，需要人工客服继续处理。"
         else:
-            reply += "以上为商城当前记录，您可在我的订单中查看各阶段进度。"
+            reply += "您可以在“我的订单”中查看配送进度。"
         return ResolutionResult(recommended_action="查询物流状态", rationale="以实际模拟订单记录为依据", draft_response=reply,
                                 requires_approval=bool(policy.get("must_review")), confidence=1)
     return None

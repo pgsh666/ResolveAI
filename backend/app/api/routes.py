@@ -20,6 +20,7 @@ from app.models import (
     AuditEvent,
     KnowledgeDocument,
     Ticket,
+    TicketAccess,
     ToolExecution,
     WorkflowCheckpoint,
     QuestionRoute,
@@ -119,6 +120,15 @@ def get_ticket_or_404(ticket_id: str, session: Session) -> Ticket:
     if not ticket:
         raise HTTPException(status_code=404, detail="工单不存在")
     assert_ticket_access(ticket.id, session)
+    return ticket
+
+
+def get_customer_ticket_or_404(ticket_id: str, session: Session) -> Ticket:
+    assert_ticket_access(ticket_id, session, customer_action=True)
+    ticket = get_ticket_or_404(ticket_id, session)
+    access = session.get(TicketAccess, ticket.id)
+    if access and access.customer_deleted_at is not None:
+        raise HTTPException(status_code=404, detail="对话不存在")
     return ticket
 
 
@@ -520,8 +530,27 @@ def get_customer_ticket(
     ticket_id: str,
     session: Session = Depends(get_db),
 ) -> CustomerTicketOut:
+    return ticket_to_customer_view(get_customer_ticket_or_404(ticket_id, session))
+
+
+@router.delete("/customer/tickets/{ticket_id}", tags=["customer"])
+def delete_customer_chat(ticket_id: str, session: Session = Depends(get_db)) -> dict:
+    # Ownership is checked even on retries. Removing client visibility must never
+    # delete the ticket, alter a pending approval, or remove merchant-side evidence.
     assert_ticket_access(ticket_id, session, customer_action=True)
-    return ticket_to_customer_view(get_ticket_or_404(ticket_id, session))
+    ticket = get_ticket_or_404(ticket_id, session)
+    access = session.get(TicketAccess, ticket.id)
+    actor = current_actor()
+    if access is None or access.owner_id != actor.id or access.workspace_id != actor.workspace_id:
+        raise HTTPException(status_code=404, detail="对话不存在")
+    session.execute(update(TicketAccess).where(
+        TicketAccess.ticket_id == ticket.id,
+        TicketAccess.owner_id == actor.id,
+        TicketAccess.workspace_id == actor.workspace_id,
+        TicketAccess.customer_deleted_at.is_(None),
+    ).values(customer_deleted_at=utc_now()))
+    session.commit()
+    return {"id": ticket.id, "deleted": True}
 
 
 @router.post(
@@ -534,8 +563,7 @@ async def send_customer_message(
     payload: CustomerMessageRequest,
     session: Session = Depends(get_db),
 ) -> CustomerTicketOut:
-    assert_ticket_access(ticket_id, session, customer_action=True)
-    ticket = get_ticket_or_404(ticket_id, session)
+    ticket = get_customer_ticket_or_404(ticket_id, session)
     assessment = dict(ticket.assessment or {})
     confirmation = assessment.get("customer_confirmation") or {}
     if confirmation.get("resolved"):
@@ -622,8 +650,7 @@ def confirm_customer_ticket(
     payload: CustomerConfirmationRequest,
     session: Session = Depends(get_db),
 ) -> CustomerTicketOut:
-    assert_ticket_access(ticket_id, session, customer_action=True)
-    ticket = get_ticket_or_404(ticket_id, session)
+    ticket = get_customer_ticket_or_404(ticket_id, session)
     assessment = dict(ticket.assessment or {})
     messages = ticket_conversation(ticket)
     if not messages or messages[-1].get("role") != "support":
@@ -1100,9 +1127,10 @@ def question_routes(q: str = Query(default="", max_length=100), limit: int = Que
 
 @router.get("/customer/tickets", response_model=list[CustomerTicketOut], tags=["customer"])
 def customer_ticket_history(session: Session = Depends(get_db)):
-    from app.models import TicketAccess
     actor = current_actor()
-    stmt = select(Ticket).join(TicketAccess, TicketAccess.ticket_id == Ticket.id).where(TicketAccess.owner_id == actor.id, TicketAccess.workspace_id == actor.workspace_id)
+    stmt = select(Ticket).join(TicketAccess, TicketAccess.ticket_id == Ticket.id).where(
+        TicketAccess.owner_id == actor.id, TicketAccess.workspace_id == actor.workspace_id,
+        TicketAccess.customer_deleted_at.is_(None))
     return [ticket_to_customer_view(t) for t in session.scalars(stmt.order_by(Ticket.created_at.desc())).all()]
 
 

@@ -3,9 +3,17 @@
 import re
 
 from app.services.reply_guard import has_funds_disclosure
+from app.services.customer_reply import uses_customer_language
+from app.services.business_questions import is_guidance_question
 
 
 def requests_money_operation(ticket: dict) -> bool:
+    if is_guidance_question(ticket.get("message", "")):
+        # "我想退款" + "请告诉我怎么申请" remains a refund request.
+        # Do not inherit that old subject for a new, explicit instruction topic.
+        implicit_application = re.search(
+            r"(?:怎么|如何|哪里|在哪).{0,3}(?:申请|办理)[呢呀啊？?！!。\s]*$", ticket.get("message", ""))
+        return bool(implicit_application and requests_money_operation({"message": ticket.get("subject", "")}))
     latest = re.sub(r"(?:不|不要|无需|暂不)(?:再|再次)?(?:申请|办理|发起|执行)(?:新的|新|再次|再)?(?:退款|退货|退还|返还)", "", ticket.get("message", ""))
     if re.search(r"(?:退款|退货).{0,6}(?:政策|规则|限制|条件)", latest) and not re.search(
             r"(?:我要|申请|直接|帮我|为我|选择|办理|执行).{0,6}(?:退款|退货|退回)", latest):
@@ -56,6 +64,7 @@ def check_draft_facts(ticket: dict, context: dict, policy: dict, resolution: dic
     )
     approval_claim = bool(re.search(r"(本次|当前|您的|由于|因为).{0,24}(需要人工审[核批]|金额.{0,6}(较大|较高|超过).{0,16}审批)", draft))
     checks = {
+        "customer_facing_language": uses_customer_language(draft),
         "order_reference_supported": not order_ids or bool(expected_order) and all(
             value.rstrip(".,。，；") == expected_order for value in order_ids
         ),

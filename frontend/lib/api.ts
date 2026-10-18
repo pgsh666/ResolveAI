@@ -151,6 +151,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   customerTicket: (id: string) => request<CustomerTicket>(`/customer/tickets/${id}`),
+  deleteCustomerChat: (id: string) => request<{ id: string; deleted: boolean }>(`/customer/tickets/${encodeURIComponent(id)}`, { method: "DELETE" }),
   sendCustomerMessage: (id: string, message: string) =>
     request<CustomerTicket>(`/customer/tickets/${id}/messages`, {
       method: "POST",

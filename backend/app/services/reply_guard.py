@@ -83,7 +83,15 @@ def check_reply_evidence(ticket, context, citations, draft):
     return checks
 
 
-def safe_review_reply():
-    return ("您好，已收到您的反馈。当前信息仍需人工核验，我们不会把未经确认的事实或时效当作结论。"
-            "本轮尚未执行退款、发券、补发或联系承运商；客服会在核实依据后继续给您处理建议。"
-            "本项目资金工具为模拟执行，不代表真实到账。")
+def safe_review_reply(ticket=None):
+    from app.services.customer_reply import human_handoff_reply
+
+    reply = human_handoff_reply()
+    # A nicer fallback must not hide the nature of a completed non-real-money operation.
+    ticket = ticket or {}
+    if any(operation.get("result", {}).get("success")
+           and operation.get("result", {}).get("order_id") == ticket.get("order_id")
+           and operation.get("result", {}).get("mode") == "simulated"
+           for operation in ticket.get("completed_operations", [])):
+        reply += NON_REAL_FUNDS_NOTICE
+    return reply

@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     semantic_embedding_model: str = "BAAI/bge-small-zh-v1.5"
     embedding_cache_dir: str = str(BACKEND_DIR.parent / ".build" / "embedding-models")
     semantic_rag_min_score: float = Field(default=0.55, ge=0, le=1)
-    prompt_version: str = "resolveai-prompts-2026-10-14-commerce-v1"
+    prompt_version: str = "resolveai-prompts-2026-10-18-customer-tone-v1"
     model_input_cost_per_million_usd: float = Field(default=0.0, ge=0)
     model_output_cost_per_million_usd: float = Field(default=0.0, ge=0)
     fast_model_input_cost_per_million_usd: float = Field(default=0.0, ge=0)
