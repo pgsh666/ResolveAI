@@ -138,8 +138,17 @@ def handoff_reasons(ticket, conversation, context):
     from app.services.reply_validation import requests_money_operation
     latest = ticket.get("message", "")
     reasons = []
-    if requests_money_operation(ticket) or (re.search(r"退款|退货|退钱", latest) and not re.search(r"政策|条件|规定|是否支持|规则", latest)):
+    if requests_money_operation(ticket) or (re.search(r"退款|退货|退钱", latest) and not re.search(r"政策|条件|规定|是否支持|规则|限制", latest)):
         reasons.append("退款或资金操作需人工处理")
+    # A payment dispute can be high risk without the literal word 'refund'.
+    # Claimed amounts are used only to escalate, never to authorize a payout.
+    dispute_text = f"{ticket.get('subject', '')} {latest}"
+    duplicate_charge = re.search(r"重复.{0,4}扣|多扣|扣(?:款|了)?.{0,3}(?:两|二|2)(?:次|笔)", dispute_text)
+    claimed_amounts = [float(value) for value in re.findall(r"(\d+(?:\.\d+)?)\s*元", latest)]
+    disputed_amount = ticket.get("amount") if ticket.get("amount") is not None else context.get("order_amount")
+    amount = max([float(disputed_amount or 0), *claimed_amounts])
+    if duplicate_charge and (amount > 100 or context.get("risk_flags")):
+        reasons.append("大额或异常重复扣款需人工核验")
     if context.get("overdue"):
         reasons.append("运输天数超过预计送达天数")
     if re.search(r"转人工|人工客服|找人工|找真人|真人客服|转接.{0,4}客服|客服人员", latest) and not re.search(r"不[要用需].{0,4}人工|无需人工", latest):

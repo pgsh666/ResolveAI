@@ -69,6 +69,18 @@ def _configure_isolated_environment(database_path: Path, settings=None) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     if database_path.exists():
         raise ValueError("评测数据库路径已存在，拒绝覆盖或删除")
+    os.environ["APP_ENV"] = "test"
+    from app.core.config import Settings, get_settings
+
+    # This helper is restricted to an independent evaluation process. Prevent
+    # subsequent Settings() instances from even opening private dotenv files.
+    Settings.model_config["env_file"] = None
+    if settings is None:
+        # The default CI rules baseline must be reproducible without reading
+        # backend/.env or inheriting a developer's RAG/model/API configuration.
+        values = {name: field.default for name, field in Settings.model_fields.items()}
+        values.update(app_env="test", auth_enabled=False, agent_mode="demo", embedding_provider="local")
+        settings = Settings(_env_file=None, **values)
     if settings is not None:
         # Explicit defaults prevent backend/.env and ambient Docker settings leaking in.
         for name, value in settings.model_dump().items():
@@ -85,6 +97,7 @@ def _configure_isolated_environment(database_path: Path, settings=None) -> None:
         OTEL_ENABLED="false",
         OTEL_CONSOLE_EXPORTER="false",
     )
+    get_settings.cache_clear()
 
 
 def _metric(numerator: int, denominator: int) -> MetricResult:
@@ -436,7 +449,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
     scenario_counts = Counter(case.scenario for case in case_results)
     report = {
         "suite": "ResolveAI Agent Evaluation",
-        "version": "2.0",
+        "version": "2.1",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "execution_mode": "live-deepseek-strict-isolated-sqlite" if live else "offline-demo-isolated-sqlite",
         "requested_cases": len(cases),

@@ -7,12 +7,15 @@ from app.services.reply_guard import has_funds_disclosure
 
 def requests_money_operation(ticket: dict) -> bool:
     latest = re.sub(r"(?:不|不要|无需|暂不)(?:再|再次)?(?:申请|办理|发起|执行)(?:新的|新|再次|再)?(?:退款|退货|退还|返还)", "", ticket.get("message", ""))
+    if re.search(r"(?:退款|退货).{0,6}(?:政策|规则|限制|条件)", latest) and not re.search(
+            r"(?:我要|申请|直接|帮我|为我|选择|办理|执行).{0,6}(?:退款|退货|退回)", latest):
+        return False
     if re.search(r"只是查询|退款进度|到账时间|到账时效|多久到账", latest) and not re.search(r"(我要|申请|直接|请求|选择|希望).{0,6}(退款|退还|返还)", latest):
         return False
     text = f"{ticket.get('subject', '')} {latest}"
     if re.search(r"(查询|核对|查看|了解).{0,8}(退款进度|退款到账|到账时间)", text) and not re.search(r"(申请|直接|我要|选择).{0,6}(退款|返还|退还)", text):
         return False
-    if re.search(r"(我想|我要|希望|选择|申请|直接|请给|给我|退给|要求).{0,12}(退款|退货|退钱|退回|返还|赔付)", text):
+    if re.search(r"(我想|我要|希望|选择|申请|直接|请给|给我|退给|要求|帮我|为我|办理|执行).{0,12}(退款|退货|退钱|退回|返还|赔付)", text):
         return True
     if re.search(r"(退款|退货).{0,6}(申请|请求)|返还.{0,6}扣款", text):
         return True

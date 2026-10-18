@@ -509,21 +509,10 @@ class LLMService:
 
     @staticmethod
     def _demo_triage(subject: str, message: str) -> TriageResult:
-        # Assistant suggestions are not customer intent. A new customer question
-        # must not inherit '物流/退款' merely because the assistant mentioned them.
-        text = (message.rsplit("客户：", 1)[-1].split("\n客服：", 1)[0]
-                if "客户：" in message else f"{subject} {message}").lower()
-        mapping = {
-            "refund": ["退款", "退货", "refund"],
-            "logistics": ["物流", "快递", "没收到", "延迟", "配送"],
-            "payment": ["支付", "扣款", "付款", "发票"],
-            "account": ["账号", "登录", "密码", "会员"],
-            "product": ["商品", "损坏", "质量", "尺寸", "颜色"],
-        }
-        category = next(
-            (name for name, keywords in mapping.items() if any(word in text for word in keywords)),
-            "other",
-        )
+        from app.services.intent import classify_support_intent, customer_messages
+
+        text = customer_messages(message)[-1].lower()
+        category = classify_support_intent(subject, message)
         angry = any(word in text for word in ["投诉", "太差", "离谱", "生气", "再也不"])
         negative = angry or any(word in text for word in ["不满意", "失败", "没有", "没到", "问题"])
         urgent = any(word in text for word in ["紧急", "马上", "今天", "投诉"])

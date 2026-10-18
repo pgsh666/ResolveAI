@@ -27,10 +27,10 @@ python -m evaluation.run --limit 5
 python -m evaluation.run --case EVAL-007 --case EVAL-031
 ```
 
-为 CI 设置端到端完成率门槛（百分数）：
+运行与 GitHub CI 相同的草稿流程达标率门槛（90%，并非客户解决率）：
 
 ```powershell
-python -m evaluation.run --fail-under 80
+python -m evaluation.run --fail-under 90
 ```
 
 ## 指标口径
@@ -50,9 +50,20 @@ python -m evaluation.run --fail-under 80
 
 评测会保留不通过项，不会为了展示把结果写死。当前基线暴露的问题可作为后续安全防护与检索优化的输入。
 
+## 2026-10-18 CI 修复与数据集版本
+
+- 修复离线分诊只看最后一句导致的上下文丢失；仅使用客户话语，客服建议不作为客户意图，新话题优先于旧标题。
+- 补充业务语言检索扩展及大额重复扣款人工核验，退款政策/限制咨询不再误判为执行退款。
+- 默认离线运行禁读本机 dotenv 文件，固定本地 Embedding 与默认检索参数，不继承开发者的 Key、数据库或服务配置。报告版本为 `2.1`，每次保留数据集 SHA256。
+- 将 `EVAL-001/002/003/004/008/011` 的预期从 `completed` 改为 `human_review`，对应已确定的退款转人工边界、退款异常核验和工具故障转交。问题、分类、预期知识来源、18 条高风险标记均不变；只咨询退款限制的 `EVAL-010` 仍期待自动答复。这是业务预期版本更新，不能与旧版本成绩直接对比。
+- 修复后的代码在**未修改预期的旧 60 条集**上也达到 **54/60（90%）**，通过原 CI 门槛；剩余 6 条仅因旧集期待自动处理退款而失败，记录保留。
+- 对齐当前业务预期后的 60 条回归全部通过；这仅是该有限离线集的观测，不是 DeepSeek 真实模型成绩或线上解决率。原 `--fail-under 90`、Top-K=3 及可靠性阈值均未降低。
+
+旧集可从 Git 历史中的 `d5ded63:backend/evaluation/cases.jsonl` 取得。报告仅保存在本地忽略目录；上传副本不携带运行数据库、逐条运行输出或用户记录。
+
 ## 真实 DeepSeek 评测（显式付费启用）
 
-默认命令和前端“运行完整评测”仍运行免费 Demo，不因应用切换 DeepSeek 而自动收费。
+默认命令和前端“运行离线规则评测”仍运行免费 Demo，不因应用切换 DeepSeek 而自动收费。
 真实评测沿用产品的分诊/方案生成 Prompt、主/快模型路由和有限重试，默认严格禁止规则降级结果充当模型成绩。
 
 先在 PyCharm Terminal 中执行免费计划检查：
@@ -118,12 +129,12 @@ python -m evaluation.run --provider deepseek --env-file ..\.env --embedding-prov
 
 先把`--allow-paid-api`替换为`--dry-run`可以免费检查计划。25条是本项目自建的补充留出集，不是外部独立业务测试集；应在查看其评测输出前冻结参数，失败结果保留，不改标注追分。
 
-本轮回归报告：`reports/live/20261012T055038Z-6318f55b`（57/60）；留出报告：`reports/live/20261012T065419Z-38ebb8fd`（23/25）。原基线及原60条JSONL保留。真人语义复核仍待完成，AI辅助观察见项目`output/closeout/AI-assisted-review.md`。
+历史真实回归为 57/60，历史补充集为 23/25，汇总见项目[验证结果与指标口径](../../docs/RESULTS.md)。历史数据集版本保存在 Git 历史中；当前 60 条集已按上述退款边界更新，25 条补充集未随本次 CI 修复调整标注，不能称为当前规则的未见独立测试集。原始报告和真人语义复核材料只留本地，不随公开副本发布。
 
 ### 离线代码测试
 
 ```powershell
-python -m pytest tests/test_evaluation.py tests/test_live_evaluation.py tests/test_resilience.py
+python -m pytest tests/test_evaluation.py tests/test_live_evaluation.py tests/test_resilience.py tests/test_offline_regression.py
 ```
 
 真实评测相关测试使用假的SDK响应，覆盖付费许可、五类小样本、数据库隔离、错误/空JSON/截断、重试用量、认证错误停止、调用次数上限和报告。测试成绩不是DeepSeek模型基准。
