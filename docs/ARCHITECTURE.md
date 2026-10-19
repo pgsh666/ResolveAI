@@ -205,7 +205,7 @@ ResolveAI 将故障处理建模为工作流状态，而不是只写日志：
 - 单元测试：工具 Schema、权限、风险策略、脱敏、状态计算和置信度；
 - 集成测试：SQLite/PostgreSQL 抽象、RAG、MCP 工具边界、LangGraph 七节点与持久化；
 - 端到端测试：客户提交、Agent 分析、人工审批、退款工具、幂等重放、发送回复与客户确认；
-- Agent 评测：60 条业务及对抗用例，生成 JSON/Markdown 基线报告；
+- Agent 评测：默认120条（原60条及新增商城60条），隔离的商品/FAQ/订单/归属夹具，检查路由、库存与回复事实，按旧客服/商城子集输出 JSON/Markdown；输入与夹具校验值冻结，旧成绩不覆盖。
 - 前端检查：ESLint 与 Next.js production build。
 
 ## 生产化的下一步

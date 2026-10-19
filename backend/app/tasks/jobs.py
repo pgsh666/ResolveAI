@@ -159,7 +159,7 @@ def run_evaluation_job(limit: int | None = None) -> dict[str, Any]:
     try:
         with get_tracer().start_as_current_span("resolveai.task.batch_evaluation") as span:
             span.set_attribute("resolveai.task.type", "batch_evaluation")
-            span.set_attribute("resolveai.evaluation.case_limit", limit or 60)
+            span.set_attribute("resolveai.evaluation.case_limit", limit or 120)
             update_current_task(15, "evaluating", "正在运行 Agent 批量评测")
             completed = subprocess.run(
                 command,

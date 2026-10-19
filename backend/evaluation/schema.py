@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-Category = Literal["refund", "logistics", "payment", "product", "account"]
+Category = Literal["refund", "logistics", "payment", "product", "account", "other"]
 Scenario = Literal[
     "ordinary",
     "multi_turn",
@@ -24,6 +24,7 @@ class HistoryMessage(BaseModel):
 
 
 class EvaluationCase(BaseModel):
+    model_config = {"extra": "forbid"}
     id: str = Field(pattern=r"^EVAL-\d{3}$")
     category: Category
     scenario: Scenario
@@ -39,9 +40,28 @@ class EvaluationCase(BaseModel):
     expected_outcome: ExpectedOutcome = "completed"
     fault: Fault | None = None
     tags: list[str] = Field(default_factory=list)
+    channel: Literal["evaluation", "web"] = "evaluation"
+    fixture: Literal["commerce-v1"] | None = None
+    faq: str | None = None
+    faq_enabled: bool = True
+    expected_routes: list[str] = Field(default_factory=list)
+    reply_contains: list[str] = Field(default_factory=list)
+    reply_contains_any: list[list[str]] = Field(default_factory=list)
+    reply_excludes: list[str] = Field(default_factory=list)
+    expected_context: dict = Field(default_factory=dict)
+    expected_stock: dict[str, int] = Field(default_factory=dict)
+    catalog_excludes: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_expectations(self) -> "EvaluationCase":
+        if (self.channel == "web") != (self.fixture is not None):
+            raise ValueError("web cases require a versioned commerce fixture; legacy cases cannot use it")
+        if self.faq and not self.fixture:
+            raise ValueError("FAQ fixtures require a commerce case")
+        if self.channel == "web" and (self.expected_tool or self.fault == "tool_timeout"):
+            raise ValueError("web fixtures query shop data directly, not the legacy MCP timeout adapter")
+        if any(not group for group in self.reply_contains_any):
+            raise ValueError("reply_contains_any groups cannot be empty")
         if self.expected_tool and not self.order_id:
             raise ValueError("expected_tool requires order_id")
         if self.expected_tool == "get_order_context":

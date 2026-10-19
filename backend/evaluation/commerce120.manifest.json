@@ -1,0 +1,34 @@
+{
+  "version": "resolveai-commerce-regression-v3.0.1",
+  "frozen_date": "2026-10-19",
+  "cases": 120,
+  "legacy_cases": 60,
+  "commerce_cases": 60,
+  "categories": {
+    "refund": 20,
+    "logistics": 22,
+    "payment": 20,
+    "product": 30,
+    "account": 20,
+    "other": 8
+  },
+  "dataset_sha256": "98fef0ec688db15073a645f7762d3f3940014d564fd25568b96607255b7428e1",
+  "legacy_dataset_sha256": "15d633b7a9d0e8565b0cfdd49cf222f0f4c6f3d0a635518911ff6babcc377bfa",
+  "fixture_profile": "commerce-v1",
+  "fixture_sha256": "07c4b0871ecfc9c4a817fa8d8a583dae72e5b06bb36874e80b846438fb4022a1",
+  "fixture_implementation_sha256": "07754a333aeed36df7e131d9b93120c5ee24005ba7d4f9c4ae7b16abcac6bd57",
+  "suite_kind": "regression",
+  "independent_holdout": false,
+  "notes": [
+    "Synthetic authored regression cases, not external user data.",
+    "Inputs, labels and fixtures frozen before full offline/live scoring; failed cases must be preserved.",
+    "Legacy cases EVAL-001..060 are unchanged; EVAL-201..260 use real web workflow routes with isolated shop fixtures."
+  ],
+  "revision_history": [
+    {
+      "initial_dataset_sha256": "643f30a11f218ca37dbd49faa032221a6795af354b418735302e2eefd7e1adfb",
+      "change": "Rekey commerce EVAL-061..120 to EVAL-201..260 to avoid existing holdout EVAL-101..125; update derived fixture order/citation identifiers only. Question text, category, outcome and behavior assertions unchanged.",
+      "before_full_live_evaluation": true
+    }
+  ]
+}

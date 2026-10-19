@@ -14,15 +14,16 @@ def test_evaluation_dataset_has_required_size_and_coverage():
     cases = load_cases()
     validate_dataset(cases)
 
-    assert len(cases) == 60
-    assert {case.category for case in cases} == REQUIRED_CATEGORIES
+    assert len(cases) == 120
+    assert {case.category for case in cases} == REQUIRED_CATEGORIES | {"other"}
     assert {case.scenario for case in cases} == REQUIRED_SCENARIOS
     assert Counter(case.category for case in cases) == {
-        "refund": 12,
-        "logistics": 12,
-        "payment": 12,
-        "product": 12,
-        "account": 12,
+        "refund": 20,
+        "logistics": 22,
+        "payment": 20,
+        "product": 30,
+        "account": 20,
+        "other": 8,
     }
 
 
@@ -67,6 +68,6 @@ def test_markdown_report_contains_all_required_metrics():
 
 
 def test_dataset_is_portable_jsonl_file():
-    path = Path(__file__).parents[1] / "evaluation" / "cases.jsonl"
+    path = Path(__file__).parents[1] / "evaluation" / "cases_v3_120.jsonl"
     lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert len(lines) == 60
+    assert len(lines) == 120

@@ -28,7 +28,7 @@ jobs:
           python -m pip_audit -r requirements.lock
       - name: Run unit, integration, and end-to-end tests
         run: python -m pytest -q
-      - name: Run 60-case Agent evaluation
+      - name: Run 120-case Agent evaluation
         run: python -m evaluation.run --fail-under 90
       - name: Upload evaluation report
         if: always()
@@ -36,8 +36,8 @@ jobs:
         with:
           name: agent-evaluation-report
           path: |
-            backend/evaluation/reports/evaluation-latest.json
-            backend/evaluation/reports/evaluation-latest.md
+            backend/evaluation/reports/v3-120/evaluation-latest.json
+            backend/evaluation/reports/v3-120/evaluation-latest.md
           if-no-files-found: warn
 
   frontend:

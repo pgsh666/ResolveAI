@@ -61,7 +61,7 @@ class KnowledgeImportRequest(BaseModel):
 
 
 class BatchEvaluationRequest(BaseModel):
-    limit: int | None = Field(default=None, ge=1, le=100)
+    limit: int | None = Field(default=None, ge=1, le=120)
 
 
 class BackgroundTaskOut(BaseModel):

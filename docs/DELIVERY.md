@@ -119,10 +119,10 @@ python -m evaluation.run --provider deepseek --smoke --dry-run --env-file ../.en
 python -m evaluation.run --provider deepseek --smoke --allow-paid-api --max-api-calls 20 --env-file ../.env --embedding-provider fastembed --embedding-cache-dir ../.build/embedding-models --prompt-version resolveai-prompts-2026-10-12-v3 --output-dir evaluation/reports/revalidation
 ```
 
-完整固定60条回归：
+默认完整120条回归（历史60条仍保留在 `evaluation/cases.jsonl`，新版输入为 `evaluation/cases_v3_120.jsonl`）：
 
 ```powershell
-python -m evaluation.run --provider deepseek --allow-paid-api --max-api-calls 180 --env-file ../.env --embedding-provider fastembed --embedding-cache-dir ../.build/embedding-models --prompt-version resolveai-prompts-2026-10-12-v3 --output-dir evaluation/reports/revalidation
+python -m evaluation.run --provider deepseek --allow-paid-api --max-api-calls 380 --env-file ../.env --embedding-provider fastembed --embedding-cache-dir ../.build/embedding-models --output-dir evaluation/reports/revalidation
 ```
 
 每次生成独立 run_id，保留原报告。严格模式不以规则降级计为模型成功；总调用上限可能使运行不完整，须看 complete 与未运行用例。评测订单/工具为模拟，库为独立 SQLite；在线 PostgreSQL/MCP 联测另计。旧25条已被看过，复跑不能继续宣称是当前版本未见过的独立留出集。

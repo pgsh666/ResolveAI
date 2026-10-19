@@ -16,8 +16,9 @@ from evaluation.schema import CaseResult, EvaluationCase, MetricResult
 
 
 EVALUATION_DIR = Path(__file__).resolve().parent
-DEFAULT_DATASET = EVALUATION_DIR / "cases.jsonl"
-DEFAULT_OUTPUT_DIR = EVALUATION_DIR / "reports"
+LEGACY_DATASET = EVALUATION_DIR / "cases.jsonl"
+DEFAULT_DATASET = EVALUATION_DIR / "cases_v3_120.jsonl"
+DEFAULT_OUTPUT_DIR = EVALUATION_DIR / "reports" / "v3-120"
 REQUIRED_CATEGORIES = {"refund", "logistics", "payment", "product", "account"}
 REQUIRED_SCENARIOS = {
     "ordinary",
@@ -51,8 +52,9 @@ def load_cases(path: Path = DEFAULT_DATASET) -> list[EvaluationCase]:
 
 
 def validate_dataset(cases: list[EvaluationCase], *, holdout: bool = False) -> None:
-    if not (20 if holdout else 50) <= len(cases) <= 100:
-        raise ValueError(f"完整评测集必须包含 50～100 条用例，当前为 {len(cases)} 条")
+    minimum = 20 if holdout else 50
+    if not minimum <= len(cases) <= 200:
+        raise ValueError(f"完整评测集必须包含 {minimum}～200 条用例，当前为 {len(cases)} 条")
     categories = {case.category for case in cases}
     scenarios = {case.scenario for case in cases}
     missing_categories = REQUIRED_CATEGORIES - categories
@@ -135,7 +137,7 @@ def _expected_outcome_matches(case: EvaluationCase, ticket, assessment: dict) ->
     )
 
 
-async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]:
+async def run_suite(cases: list[EvaluationCase], *, live=None, progress=None) -> dict[str, Any]:
     # App imports deliberately happen after the isolated environment is configured.
     from sqlalchemy import select
 
@@ -154,6 +156,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
     from app.services.seed import seed_database
     from app.services.workflow import WorkflowService
     from app.services.embeddings import EmbeddingService
+    from evaluation.fixtures import prepare_case, business_checks, fixture_snapshot
 
     get_settings.cache_clear()
     init_db()
@@ -200,6 +203,8 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
         "tool_argument_accuracy": [],
         "high_risk_block_rate": [],
         "end_to_end_completion_rate": [],
+        "business_behavior_accuracy": [],
+        "low_risk_handoff_rate": [],
     }
     evaluated_ticket_ids: list[str] = []
     relevant_hits = 0
@@ -222,7 +227,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
                 ticket_no=case.id,
                 customer_name=f"评测用户-{case.id[-3:]}",
                 customer_tier="standard",
-                channel="evaluation",
+                channel=case.channel,
                 subject=case.subject,
                 message=case.message,
                 order_id=case.order_id,
@@ -252,6 +257,10 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
             session.add(ticket)
             session.commit()
             session.refresh(ticket)
+            if case.fixture:
+                prepare_case(session, case, ticket)
+                documents_by_source.update({document.source: document
+                    for document in session.scalars(select(KnowledgeDocument)).all()})
             evaluated_ticket_ids.append(ticket.id)
 
             gateway_settings = Settings(
@@ -352,6 +361,11 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
                 and _expected_outcome_matches(case, ticket, assessment)
             )
             metric_checks["end_to_end_completion_rate"].append(e2e_ok)
+            behavior_checks = business_checks(case, ticket, assessment)
+            if behavior_checks:
+                metric_checks["business_behavior_accuracy"].append(error_message is None and all(behavior_checks.values()))
+            if case.channel == "web" and case.expected_outcome == "completed":
+                metric_checks["low_risk_handoff_rate"].append(bool(ticket.requires_approval))
 
             applicable_checks = [
                 intent_ok,
@@ -362,6 +376,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
                 *([] if tool_arguments_ok is None else [tool_arguments_ok]),
                 *([] if high_risk_ok is None else [high_risk_ok]),
                 *([] if live_llm is None else [live_ok]),
+                *behavior_checks.values(),
             ]
             case_results.append(
                 CaseResult(
@@ -379,9 +394,11 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
                         "high_risk_blocked": high_risk_ok,
                         "end_to_end": e2e_ok,
                         **({"live_model": live_ok} if live_llm else {}),
+                        **behavior_checks,
                     },
                     observed={
                         "category": observed_category,
+                        "channel": case.channel,
                         "status": ticket.status,
                         "requires_approval": ticket.requires_approval,
                         "citation_sources": [item.get("source") for item in citations],
@@ -409,6 +426,11 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
                     },
                 )
             )
+            if progress is not None:
+                progress({"completed": len(case_results), "requested": len(cases), "last_case": case.id,
+                          "passed_so_far": sum(item.passed for item in case_results),
+                          "api_calls": len(live.calls) if live else 0,
+                          "max_api_calls": live.max_api_calls if live else 0})
             if live is not None and live.abort_reason:
                 break
 
@@ -451,7 +473,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
     scenario_counts = Counter(case.scenario for case in case_results)
     report = {
         "suite": "ResolveAI Agent Evaluation",
-        "version": "2.1",
+        "version": "3.0",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "execution_mode": "live-deepseek-strict-isolated-sqlite" if live else "offline-demo-isolated-sqlite",
         "requested_cases": len(cases),
@@ -463,6 +485,7 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
         "coverage": {
             "categories": dict(sorted(category_counts.items())),
             "scenarios": dict(sorted(scenario_counts.items())),
+            "channels": dict(Counter(case.channel for case in cases[:len(case_results)])),
         },
         "metrics": metrics,
         "cases": [result.model_dump() for result in case_results],
@@ -475,6 +498,10 @@ async def run_suite(cases: list[EvaluationCase], *, live=None) -> dict[str, Any]
         ],
         "knowledge_snapshot": knowledge_snapshot,
         "embedding_profile": EmbeddingService().profile,
+        "fixture_snapshot": fixture_snapshot(),
+        "cohorts": {name: {"evaluated_cases": len(group), "passed_cases": sum(item.passed for item in group)}
+                    for name, group in (("legacy_support", [item for item in case_results if item.observed["channel"] == "evaluation"]),
+                                        ("commerce", [item for item in case_results if item.observed["channel"] == "web"]))},
     }
     if live is not None:
         from evaluation.live import public_config, summarize_calls
@@ -503,6 +530,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         "rag_hit_at_k": "RAG Hit@K（用例级至少命中一篇）",
         "overall_case_pass_rate": "整体用例通过率",
         "live_model_case_rate": "严格真实模型流程有效率",
+        "business_behavior_accuracy": "业务行为断言通过率（非人工语义评分）",
+        "low_risk_handoff_rate": "低风险误转人工率（越低越好）",
     }
     lines = [
         "# ResolveAI Agent 自动化评测报告",
@@ -511,6 +540,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- 执行模式：`{report['execution_mode']}`",
         f"- 用例结果：{report['passed_cases']} / {report['evaluated_cases']} 通过",
         f"- 完整执行：{'是' if report.get('complete', True) else '否；不得作为完整评测成绩'}",
+        f"- 数据集 SHA256：`{report.get('dataset_sha256', '未提供')}`",
         "",
         "## 核心指标",
         "",
@@ -568,6 +598,10 @@ def render_markdown(report: dict[str, Any]) -> str:
             lines.append(
                 f"| {item['id']} | {item['category']} | {item['scenario']} | {failed_checks} |"
             )
+    if report.get("cohorts"):
+        lines.extend(["", "## 分组结果", "", "| 分组 | 通过 / 已执行 |", "| --- | ---: |"])
+        for name, cohort in report["cohorts"].items():
+            lines.append(f"| {name} | {cohort['passed_cases']} / {cohort['evaluated_cases']} |")
     if "live_summary" in report:
         summary = report["live_summary"]
         lines.extend([
@@ -624,7 +658,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-api-calls", type=int, default=20, help="总API尝试次数上限（包括重试和质检重生成），默认20")
     parser.add_argument("--embedding-provider", choices=("auto", "local", "fastembed", "openai"))
     parser.add_argument("--embedding-cache-dir", type=Path)
-    parser.add_argument("--holdout", action="store_true", help="运行20～100条、覆盖五类和八种场景的独立留出集")
+    parser.add_argument("--holdout", action="store_true", help="运行20～200条、覆盖五类和八种场景的补充留出集")
     parser.add_argument("--prompt-version")
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -651,6 +685,15 @@ def main(argv: list[str] | None = None) -> int:
     all_cases = load_cases(args.dataset)
     dataset_sha256 = sha256(args.dataset.read_bytes()).hexdigest()
     validate_dataset(all_cases, holdout=args.holdout)
+    frozen_manifest = None
+    if args.dataset.resolve() == DEFAULT_DATASET.resolve():
+        from evaluation.fixtures import fixture_snapshot
+        frozen_manifest = json.loads((EVALUATION_DIR / "commerce120.manifest.json").read_text(encoding="utf-8"))
+        snapshot = fixture_snapshot()
+        if (dataset_sha256 != frozen_manifest["dataset_sha256"]
+            or snapshot["sha256"] != frozen_manifest["fixture_sha256"]
+            or snapshot["implementation_sha256"] != frozen_manifest["fixture_implementation_sha256"]):
+            raise ValueError("120条评测输入、标注或业务夹具与冻结版本不一致；请创建新版本，不得改预期追分")
     selected_cases = all_cases
     if args.smoke:
         selected_cases = [next(case for case in all_cases if case.category == category)
@@ -698,8 +741,11 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = args.output_dir / "live" / run_id if live else args.output_dir
     database_path = output_dir / f".evaluation-{uuid4().hex}.db"
     _configure_isolated_environment(database_path, settings)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    def progress(update):
+        (output_dir / "progress.json").write_text(json.dumps({"run_id": run_id, **update}), encoding="utf-8")
     try:
-        report = asyncio.run(run_suite(selected_cases, live=live))
+        report = asyncio.run(run_suite(selected_cases, live=live, progress=progress))
     finally:
         # Only remove the unique database created by this invocation, never business data.
         if "app.core.database" in sys.modules:
@@ -709,6 +755,9 @@ def main(argv: list[str] | None = None) -> int:
     report["dataset_sha256"] = dataset_sha256
     report["dataset_cases"] = len(all_cases)
     report["suite_kind"] = "holdout" if args.holdout else "regression"
+    report["frozen_manifest"] = frozen_manifest
+    archive_dir = output_dir / "runs" / run_id
+    write_reports(report, archive_dir)
     json_path, markdown_path = write_reports(report, output_dir)
     print(f"评测完成：{report['passed_cases']}/{report['evaluated_cases']} 条用例通过")
     for name, metric in report["metrics"].items():
